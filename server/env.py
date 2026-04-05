@@ -1,4 +1,4 @@
-"""Core OpenEnv environment for Python code review tasks."""
+"""Core OpenEnv environment for Python code review and repair tasks."""
 
 from __future__ import annotations
 
@@ -15,16 +15,14 @@ from models import (
     PythonCodeReviewObservation,
     PythonCodeReviewState,
     RewardDetails,
-    TaskDescriptor,
     TaskGrade,
-    reward_metadata,
 )
 from tasks import TaskSpec, get_task, list_task_descriptors, list_task_summaries, task_ids
 
 
-INVALID_ACTION_PENALTY = -0.1
-TIMEOUT_PENALTY = 0.2
-QUALITY_BONUS_SCALE = -0.1
+# Reward shaping constants
+INVALID_ACTION_PENALTY = 0.1
+QUALITY_BONUS_SCALE = 0.15
 
 
 class PythonCodeReviewEnvironment(
@@ -42,7 +40,7 @@ class PythonCodeReviewEnvironment(
         self._state = PythonCodeReviewState()
         self._done = False
         self._last_status = "Call reset() to start."
-        self._last_reward = RewardDetails(reason="Environment initialized.")
+        self._last_reward = RewardDetails(value=0.0, reason="Environment initialized.")
         self._best_visible_test_fraction = 0.0
         self._best_quality_score = 0.0
         self._full_correctness_awarded = False
@@ -58,6 +56,8 @@ class PythonCodeReviewEnvironment(
         """Reset the environment to the next deterministic task."""
 
         del seed
+        
+        # Select task
         if task_id:
             self._task = get_task(task_id)
             self._task_cursor = self._task_order.index(task_id)
@@ -65,13 +65,15 @@ class PythonCodeReviewEnvironment(
             self._task_cursor = (self._task_cursor + 1) % len(self._task_order)
             self._task = get_task(self._task_order[self._task_cursor])
 
+        # Reset episode state
         self._done = False
         self._best_visible_test_fraction = 0.0
         self._best_quality_score = 0.0
         self._full_correctness_awarded = False
         self._syntax_reward_awarded = False
         self._last_status = "Inspect the code, edit it, run tests, then submit."
-        self._last_reward = RewardDetails(reason="Episode reset.")
+        self._last_reward = RewardDetails(value=0.0, reason="Episode reset.")
+        
         self._state = PythonCodeReviewState(
             episode_id=episode_id or str(uuid4()),
             step_count=0,
@@ -86,6 +88,7 @@ class PythonCodeReviewEnvironment(
             score=0.0,
             done=False,
         )
+        
         return self._build_observation()
 
     def step(
@@ -97,7 +100,272 @@ class PythonCodeReviewEnvironment(
         """Apply one structured action."""
 
         del timeout_s
+        
         if self._task is None:
+            return self.reset()
+        
+        if self._done:
+            self._last_reward = RewardDetails(
+                value=-INVALID_ACTION_PENALTY,
+                invalid_action_penalty=INVALID_ACTION_PENALTY,
+                reason="Episode already completed.",
+            )
+            self._last_status = "Episode already completed. Call reset() to continue."
+            return self._build_observation()
+
+        self._state.step_count += 1
+        status = ""
+        reward = RewardDetails(value=0.0, reason="Action processed.")
+
+        # Dispatch to handler based on action type
+        if action.action_type == "analyze_code":
+            reward, status = self._handle_analyze()
+        elif action.action_type == "edit_code":
+            reward, status = self._handle_edit(action)
+        elif action.action_type == "run_tests":
+            reward, status = self._handle_run_tests()
+        elif action.action_type == "submit_solution":
+            reward, status = self._handle_submit()
+        else:
+            reward = RewardDetails(
+                value=-INVALID_ACTION_PENALTY,
+                invalid_action_penalty=INVALID_ACTION_PENALTY,
+                reason=f"Unsupported action_type: {action.action_type}",
+            )
+            status = f"Invalid action: unsupported action_type '{action.action_type}'."
+
+        self._last_reward = reward
+        self._last_status = status
+        self._state.attempts_remaining = max(self._task.max_steps - self._state.step_count, 0)
+        self._state.done = self._done
+
+        # Auto-submit if steps exhausted
+        if self._state.attempts_remaining == 0 and not self._done:
+            self._finalize_episode(auto_submit=True)
+            self._state.done = True
+
+        return self._build_observation()
+
+    @property
+    def state(self) -> PythonCodeReviewState:
+        """Return the current environment state."""
+        return self._state.model_copy(deep=True)
+
+    def list_task_summaries(self) -> List[object]:
+        """Return public task metadata."""
+        return list_task_summaries()
+
+    def get_task(self, task_id: str) -> object:
+        """Return a single task descriptor."""
+        return get_task(task_id).to_descriptor()
+
+    def health(self) -> HealthResponse:
+        """Return a simple health model."""
+        return HealthResponse(task_count=len(self._task_order))
+
+    def grade_task_submission(self, task_id: str, code: str) -> TaskGrade:
+        """Expose deterministic grading outside of an active episode."""
+        return grade_task(code, get_task(task_id), include_hidden=True)
+
+    def _build_observation(self) -> PythonCodeReviewObservation:
+        """Build current observation from state."""
+        return PythonCodeReviewObservation(
+            task_id=self._state.task_id or "",
+            difficulty=self._state.difficulty or "easy",
+            task_description=self._task.task_description if self._task else "",
+            current_code=self._state.current_code,
+            errors=self._state.errors,
+            test_results=self._state.test_results,
+            visible_tests=self._task.visible_tests if self._task else [],
+            history=self._state.history,
+            attempts_remaining=self._state.attempts_remaining,
+            score=self._state.score,
+            reward=self._last_reward,
+        )
+
+    def _handle_analyze(self) -> tuple[RewardDetails, str]:
+        """Analyze code for errors and test status."""
+        if self._task is None:
+            return RewardDetails(value=0.0, reason="Invalid state"), "Error: task not loaded"
+        
+        grade = grade_task(self._state.current_code, self._task, include_hidden=False)
+        error = grade.details.get("compile_error", "")
+        
+        if error:
+            self._state.errors = error
+            self._state.test_results = "Compilation failed. Fix syntax first."
+            summary = f"Syntax error detected: {error}"
+        else:
+            self._state.errors = ""
+            if self._task.task_kind == "syntax_fix":
+                self._state.test_results = "Code compiles successfully."
+                summary = "Code compiles. Ready to submit."
+            else:
+                visible_total = len(self._task.visible_tests)
+                visible_passed = grade.tests_passed
+                self._state.test_results = f"Test run: {visible_passed}/{visible_total} passing."
+                summary = self._state.test_results
+
+        reward = RewardDetails(value=0.0, reason=summary)
+        self._append_history("analyze_code", summary, reward.value)
+        self._sync_score(include_hidden=False)
+        return reward, summary
+
+    def _handle_edit(self, action: PythonCodeReviewAction) -> tuple[RewardDetails, str]:
+        """Edit the code and compute reward for progress."""
+        if self._task is None:
+            return RewardDetails(value=0.0, reason="Invalid state"), "Error: task not loaded"
+        
+        code = (action.code or "").strip()
+        if not code:
+            reward = RewardDetails(
+                value=-INVALID_ACTION_PENALTY,
+                invalid_action_penalty=INVALID_ACTION_PENALTY,
+                reason="Edit action requires non-empty code.",
+            )
+            status = "Invalid: edit_code requires code parameter."
+            self._append_history("edit_code", status, reward.value)
+            return reward, status
+
+        # Grade before and after
+        previous_grade = grade_task(self._state.current_code, self._task, include_hidden=False)
+        new_grade = grade_task(code, self._task, include_hidden=False)
+        self._state.current_code = code
+
+        # Update state
+        self._state.errors = new_grade.details.get("compile_error", "")
+        self._state.test_results = self._format_test_results(new_grade)
+
+        # Compute reward with shaping
+        syntax_reward = 0.0
+        if previous_grade.syntax_score < 1.0 and new_grade.syntax_score == 1.0:
+            syntax_reward = 0.2
+            self._syntax_reward_awarded = True
+
+        quality_delta = max(new_grade.quality_score - self._best_quality_score, 0.0)
+        quality_bonus = 0.0
+        if quality_delta > 0:
+            quality_bonus = min(quality_delta * QUALITY_BONUS_SCALE, 0.1)
+            self._best_quality_score = new_grade.quality_score
+
+        test_delta = 0.0
+        if new_grade.tests_total > 0:
+            current_test_fraction = new_grade.tests_passed / new_grade.tests_total
+            test_delta = max(current_test_fraction - self._best_visible_test_fraction, 0.0)
+            self._best_visible_test_fraction = max(self._best_visible_test_fraction, current_test_fraction)
+
+        reward_value = syntax_reward + quality_bonus + (0.15 * test_delta)
+        
+        status = "Code updated."
+        if self._state.errors:
+            status = f"Code updated with syntax issues: {self._state.errors}"
+        elif new_grade.tests_total > 0:
+            status = self._state.test_results
+
+        reward = RewardDetails(
+            value=reward_value,
+            syntax_reward=syntax_reward,
+            quality_bonus=quality_bonus,
+            test_reward=0.15 * test_delta,
+            reason=status,
+        )
+        self._append_history("edit_code", status, reward_value)
+        self._sync_score(include_hidden=False)
+        return reward, status
+
+    def _handle_run_tests(self) -> tuple[RewardDetails, str]:
+        """Run tests and provide feedback."""
+        if self._task is None:
+            return RewardDetails(value=0.0, reason="Invalid state"), "Error: task not loaded"
+        
+        grade = grade_task(self._state.current_code, self._task, include_hidden=False)
+        self._state.errors = grade.details.get("compile_error", "")
+        self._state.test_results = self._format_test_results(grade)
+
+        if grade.tests_total > 0:
+            current_fraction = grade.tests_passed / grade.tests_total
+            test_delta = max(current_fraction - self._best_visible_test_fraction, 0.0)
+            self._best_visible_test_fraction = max(self._best_visible_test_fraction, current_fraction)
+            test_reward = 0.15 * test_delta
+        else:
+            test_reward = 0.0
+
+        status = self._state.test_results if not self._state.errors else self._state.errors
+        reward = RewardDetails(value=test_reward, test_reward=test_reward, reason=status)
+        self._append_history("run_tests", status, reward.value)
+        self._sync_score(include_hidden=False)
+        return reward, status
+
+    def _handle_submit(self) -> tuple[RewardDetails, str]:
+        """Submit solution and finalize episode."""
+        if self._task is None:
+            return RewardDetails(value=0.0, reason="Invalid state"), "Error: task not loaded"
+        
+        grade = grade_task(self._state.current_code, self._task, include_hidden=True)
+        self._state.errors = grade.details.get("compile_error", "")
+        self._state.test_results = self._format_test_results(grade)
+
+        # Compute final reward bonuses
+        correctness_bonus = 0.0
+        if grade.score >= 0.999999 and not self._full_correctness_awarded:
+            correctness_bonus = 0.5
+            self._full_correctness_awarded = True
+
+        reward_value = correctness_bonus
+        self._finalize_episode(auto_submit=False, grade=grade)
+        status = f"Solution submitted. Final score: {grade.score:.3f}"
+        
+        reward = RewardDetails(
+            value=reward_value,
+            correctness_bonus=correctness_bonus,
+            reason=status,
+        )
+        self._append_history("submit_solution", status, reward_value)
+        return reward, status
+
+    def _finalize_episode(self, auto_submit: bool, grade: Optional[TaskGrade] = None) -> None:
+        """Mark episode as done and set final score."""
+        if grade is None:
+            if self._task is None:
+                return
+            grade = grade_task(self._state.current_code, self._task, include_hidden=True)
+            self._state.errors = grade.details.get("compile_error", "")
+            self._state.test_results = self._format_test_results(grade)
+        
+        self._state.score = grade.score
+        self._done = True
+        self._state.done = True
+        
+        if auto_submit:
+            self._last_status = f"Step budget exhausted. Final score: {grade.score:.3f}"
+
+    def _sync_score(self, include_hidden: bool) -> None:
+        """Update visible score based on current code."""
+        if self._task is None:
+            return
+        grade = grade_task(self._state.current_code, self._task, include_hidden=include_hidden)
+        # For visible runs, use a soft score; for hidden, it will be finalized on submit
+        if not include_hidden:
+            self._state.score = grade.score
+
+    def _format_test_results(self, grade: TaskGrade) -> str:
+        """Format test results for display."""
+        if grade.tests_total == 0:
+            return "No tests available."
+        if grade.timed_out:
+            return "Test execution timed out."
+        return f"Tests: {grade.tests_passed}/{grade.tests_total} passing"
+
+    def _append_history(self, action_type: str, status: str, reward: float) -> None:
+        """Append action to history."""
+        entry = HistoryEntry(
+            step=self._state.step_count,
+            action_type=action_type,
+            status=status,
+            reward=reward,
+        )
+        self._state.history.append(entry)
+
             return self.reset()
         if self._done:
             self._last_reward = RewardDetails(

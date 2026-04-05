@@ -152,12 +152,12 @@ def grade_optimization_task(candidate_code: str, task: TaskSpec) -> TaskGrade:
         syntax_score=1.0,
         tests_passed=execution.passed,
         tests_total=execution.total,
-        runtime_score=runtime_score,
         quality_score=quality_score,
-        style_score=pep8_score,
         details={
             "tests": execution.output,
             "benchmark": benchmark_output,
             "test_fraction": round(test_fraction, 4),
+            "runtime_score": round(runtime_score, 4),
+            "style_score": round(pep8_score, 4),
         },
     )

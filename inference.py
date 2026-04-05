@@ -1,228 +1,287 @@
-"""Baseline inference runner for the Python code review environment."""
+#!/usr/bin/env python3
+"""
+Baseline inference script for python_code_review_env.
+
+Demonstrates how to run an OpenEnv environment using OpenAI-compatible API,
+supporting free/open models like Gemini, DeepSeek, Together AI, OpenRouter, etc.
+
+Usage:
+    # Using Gemini (free tier)
+    export OPENAI_API_KEY="your-gemini-api-key"
+    python inference.py --base-url "https://generativelanguage.googleapis.com/openai/" --model "gemini-2.0-flash"
+    
+    # Using DeepSeek (free tier)
+    export OPENAI_API_KEY="your-deepseek-api-key"
+    python inference.py --base-url "https://api.deepseek.com" --model "deepseek-chat"
+    
+    # Using Together AI
+    export OPENAI_API_KEY="your-together-api-key"
+    python inference.py --base-url "https://api.together.xyz/v1" --model "deepseek-ai/deepseek-chat"
+    
+    # Using local OpenAI (default)
+    python inference.py --base-url "http://localhost:8000/v1" --model "gpt-3.5-turbo"
+"""
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
-from pathlib import Path
-from typing import Any, Dict, List
+import sys
+from typing import Optional
 
 from openai import OpenAI
 
-from client import PythonEnv
-from models import PythonCodeReviewAction
+# Import environment and models
+from server.env import PythonCodeReviewEnvironment
+from models import (
+    PythonCodeReviewAction,
+    PythonCodeReviewObservation,
+)
 from tasks import task_ids
 
 
-API_BASE_URL = os.environ["API_BASE_URL"]
-API_KEY = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-ENV_BASE_URL = os.getenv("ENV_BASE_URL")
-DOCKER_IMAGE = os.getenv("PYTHON_ENV_IMAGE", "python_code_review_env:latest")
-REPORT_PATH = Path(os.getenv("INFERENCE_REPORT_PATH", "inference_results.json"))
-TEMPERATURE = float(os.getenv("TEMPERATURE", "0"))
-MAX_TOKENS = int(os.getenv("MAX_TOKENS", "1200"))
+def get_model_config(base_url: Optional[str], model: str, api_key: Optional[str]) -> tuple[str, str, str]:
+    """Determine API configuration from environment or arguments."""
+    
+    # API Key
+    final_api_key = api_key or os.getenv("OPENAI_API_KEY", "")
+    if not final_api_key:
+        print("Warning: OPENAI_API_KEY not set. Using dummy key for local testing.")
+        final_api_key = "sk-test"
+    
+    # Base URL
+    final_base_url = base_url or os.getenv("OPENAI_API_BASE", "http://localhost:8000/v1")
+    
+    # Model
+    final_model = model or os.getenv("MODEL_NAME", "gpt-3.5-turbo")
+    
+    return final_base_url, final_model, final_api_key
 
-SYSTEM_PROMPT = """You are fixing Python code inside a deterministic OpenEnv benchmark.
-Respond with strict JSON only.
 
-Schema:
-{
-  "action_type": "analyze_code" | "edit_code" | "run_tests" | "submit_solution",
-  "code": "required only when action_type is edit_code",
-  "notes": "optional"
-}
+def build_prompt_for_task(observation: PythonCodeReviewObservation) -> str:
+    """Construct task-specific prompt for the LLM."""
+    
+    return f"""You are an expert Python code reviewer. Your job is to fix and improve Python code.
 
-Rules:
-- Prefer analyze_code before editing.
-- Use edit_code to return the full updated file.
-- Use run_tests after edits.
-- Use submit_solution when the code is ready.
-- Return JSON only, no markdown.
+TASK: {observation.task_description}
+
+DIFFICULTY: {observation.difficulty.upper()}
+
+VISIBLE TEST CASES:
+{chr(10).join(f"- {test}" for test in observation.visible_tests) or "- No visible tests"}
+
+CURRENT CODE:
+```python
+{observation.current_code}
+```
+
+{f"ERRORS: {observation.errors}" if observation.errors else ""}
+
+{f"TEST RESULTS: {observation.test_results}" if observation.test_results else ""}
+
+You have {observation.attempts_remaining} attempts left.
+Current score: {observation.score:.3f}
+
+Analyze the code and decide what to do next:
+1. If you see syntax errors, provide fixed code
+2. If tests are failing, analyze why and fix logic
+3. If code looks good, submit your solution
+4. For optimization tasks, improve efficiency while keeping tests passing
+
+Respond ONLY with a JSON object in this exact format (no markdown, no backticks):
+{{
+  "action_type": "analyze_code|edit_code|run_tests|submit_solution",
+  "code": "...only if action_type is edit_code...",
+  "reasoning": "brief explanation"
+}}
 """
 
 
-def build_prompt(observation) -> str:
-    """Build the user message from the current observation."""
-
-    history = "\n".join(
-        f"{entry.step}. {entry.action_type}: {entry.summary} (reward={entry.reward:.2f})"
-        for entry in observation.history[-6:]
-    ) or "No history yet."
-    visible_tests = "\n".join(observation.metadata.get("visible_tests", [])) or "None"
-    return (
-        f"Task ID: {observation.task_id}\n"
-        f"Difficulty: {observation.difficulty}\n"
-        f"Task kind: {observation.task_kind}\n"
-        f"Description: {observation.task_description}\n"
-        f"Attempts remaining: {observation.attempts_remaining}\n"
-        f"Score: {observation.score:.2f}\n"
-        f"Last status: {observation.last_action_status}\n"
-        f"Errors: {observation.errors or 'None'}\n"
-        f"Test results: {observation.test_results or 'Not run'}\n"
-        f"Visible tests:\n{visible_tests}\n"
-        f"History:\n{history}\n\n"
-        f"Current code:\n{observation.current_code}\n"
-    )
-
-
-def extract_json(content: str) -> Dict[str, Any]:
-    """Extract the first JSON object from model output."""
-
-    start = content.find("{")
-    end = content.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return {}
-    try:
-        return json.loads(content[start : end + 1])
-    except json.JSONDecodeError:
-        return {}
-
-
-def heuristic_edit(task_id: str) -> str:
-    """Deterministic fallback fix for the bundled tasks."""
-
-    if task_id == "syntax-fix-easy":
-        return """def normalize_username(raw_name: str) -> str:
-    cleaned = raw_name.strip().lower()
-    if not cleaned:
-        return "anonymous"
-    return cleaned.replace(" ", "_")
-"""
-    if task_id == "bug-fix-medium":
-        return """from typing import Iterable
-
-
-def calculate_invoice_total(line_items: Iterable[int], discount_percent: int) -> int:
-    if discount_percent < 0 or discount_percent > 100:
-        raise ValueError("discount_percent must be between 0 and 100")
-
-    subtotal = sum(line_items)
-    discounted_total = subtotal - (subtotal * discount_percent // 100)
-    return discounted_total
-"""
-    return """from collections import Counter
-from typing import Iterable
-
-
-def summarize_user_activity(events: Iterable[dict]) -> list[tuple[str, int]]:
-    \"\"\"Aggregate user activity counts in one pass.\"\"\"
-
-    counts = Counter(event["user_id"] for event in events)
-    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-"""
-
-
-def fallback_action(observation) -> PythonCodeReviewAction:
-    """Fallback policy that guarantees completion."""
-
-    if not observation.history:
-        return PythonCodeReviewAction(action_type="analyze_code")
-
-    if observation.score < 0.999 and observation.attempts_remaining > 2:
-        return PythonCodeReviewAction(
-            action_type="edit_code",
-            code=heuristic_edit(observation.task_id),
-            notes="Deterministic fallback repair.",
-        )
-
-    if observation.attempts_remaining > 1 and "full grader" not in observation.test_results:
-        return PythonCodeReviewAction(action_type="run_tests")
-
-    return PythonCodeReviewAction(action_type="submit_solution")
-
-
-def request_action(client: OpenAI, observation) -> PythonCodeReviewAction:
-    """Ask the configured model for the next environment action."""
-
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        temperature=TEMPERATURE,
-        max_tokens=MAX_TOKENS,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_prompt(observation)},
-        ],
-    )
-    content = response.choices[0].message.content or "{}"
-    payload = extract_json(content)
-    try:
-        action = PythonCodeReviewAction(**payload)
-    except Exception:
-        return fallback_action(observation)
-
-    if action.action_type == "edit_code" and not action.code:
-        return fallback_action(observation)
-    return action
-
-
-def make_env() -> PythonEnv:
-    """Connect to a running environment or spin up the local Docker image."""
-
-    if ENV_BASE_URL:
-        return PythonEnv(base_url=ENV_BASE_URL)
-    return PythonEnv.from_docker_image(DOCKER_IMAGE)
-
-
-def run_task(task_id: str, task_index: int, client: OpenAI, env: PythonEnv) -> Dict[str, Any]:
-    """Run one deterministic task episode."""
-
-    result = env.reset(task_id=task_id)
-    observation = result.observation
-    logs: List[Dict[str, Any]] = []
-
-    while not result.done and observation.attempts_remaining > 0:
+def run_task_episode(
+    env: PythonCodeReviewEnvironment,
+    task_id: str,
+    client: OpenAI,
+    model: str,
+    max_steps: int = 10,
+    verbose: bool = True,
+) -> float:
+    """Run one complete task episode and return the score."""
+    
+    # Reset environment for this task
+    observation = env.reset(task_id=task_id)
+    total_reward = 0.0
+    step_count = 0
+    
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"TASK: {task_id} ({observation.difficulty})")
+        print(f"{'='*70}")
+    
+    while not observation.done and step_count < max_steps:
+        step_count += 1
+        
+        # Get action from LLM
         try:
-            action = request_action(client, observation)
-        except Exception:
-            action = fallback_action(observation)
+            prompt = build_prompt_for_task(observation)
+            
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=2000,
+            )
+            
+            response_text = response.choices[0].message.content or ""
+            
+            # Try to parse JSON from response
+            try:
+                # Find JSON in the response
+                json_start = response_text.find("{")
+                json_end = response_text.rfind("}") + 1
+                if json_start >= 0 and json_end > json_start:
+                    json_str = response_text[json_start:json_end]
+                    action_dict = json.loads(json_str)
+                else:
+                    raise ValueError("No JSON found in response")
+            except (json.JSONDecodeError, ValueError) as e:
+                if verbose:
+                    print(f"Step {step_count}: Failed to parse response: {e}")
+                    print(f"Response: {response_text[:200]}")
+                # Fallback to analyze_code
+                action_dict = {"action_type": "analyze_code"}
+            
+            # Build action
+            action = PythonCodeReviewAction(
+                action_type=action_dict.get("action_type", "analyze_code"),
+                code=action_dict.get("code"),
+            )
+            
+        except Exception as e:
+            if verbose:
+                print(f"Step {step_count}: Error getting LLM response: {e}")
+            # Fallback action
+            action = PythonCodeReviewAction(action_type="analyze_code")
+        
+        # Execute action
+        observation = env.step(action)
+        total_reward += observation.reward.value
+        
+        if verbose:
+            print(f"Step {step_count}: {action.action_type}")
+            if observation.reward.value != 0:
+                print(f"  Reward: {observation.reward.value:+.4f} ({observation.reward.reason})")
+            if observation.errors:
+                print(f"  Errors: {observation.errors}")
+            if observation.test_results:
+                print(f"  Tests: {observation.test_results}")
+    
+    final_score = observation.score
+    if verbose:
+        print(f"\nFinal Score: {final_score:.3f} (Total Reward: {total_reward:.4f})")
+    
+    return final_score
 
-        result = env.step(action)
-        observation = result.observation
-        logs.append(
-            {
-                "action_type": action.action_type,
-                "reward": result.reward,
-                "score": observation.score,
-                "status": observation.last_action_status,
-            }
-        )
 
-    task_score = round(observation.score, 4)
-    print(f"Task {task_index} Score: {task_score}")
-    return {
-        "task_id": task_id,
-        "score": task_score,
-        "steps": logs,
-    }
-
-
-def main() -> None:
-    """Run the baseline over all bundled tasks."""
-
-    if not API_KEY:
-        raise RuntimeError("Set API_KEY, OPENAI_API_KEY, or HF_TOKEN before running inference.py")
-
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-    env = make_env()
-    results: List[Dict[str, Any]] = []
-
+def main(args: Optional[list[str]] = None) -> None:
+    """Run baseline evaluation on all tasks."""
+    
+    parser = argparse.ArgumentParser(
+        description="Baseline inference for python_code_review_env",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        help="API base URL (default: OPENAI_API_BASE or http://localhost:8000/v1)",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Model name (default: MODEL_NAME or gpt-3.5-turbo)",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="API key (default: OPENAI_API_KEY)",
+    )
+    parser.add_argument(
+        "--task",
+        default=None,
+        help="Run single task instead of all",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Minimize output",
+    )
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=10,
+        help="Max steps per episode",
+    )
+    
+    parsed = parser.parse_args(args)
+    
+    # Get configuration
+    base_url, model, api_key = get_model_config(
+        parsed.base_url,
+        parsed.model,
+        parsed.api_key,
+    )
+    
+    print(f"Configuration:")
+    print(f"  Base URL: {base_url}")
+    print(f"  Model: {model}")
+    print(f"  Max steps per episode: {parsed.max_steps}")
+    print()
+    
+    # Initialize client
     try:
-        for index, task_id in enumerate(task_ids(), start=1):
-            results.append(run_task(task_id, index, client, env))
-    finally:
-        env.close()
-
-    final_score = round(sum(item["score"] for item in results) / len(results), 4)
-    report = {
-        "model_name": MODEL_NAME,
-        "api_base_url": API_BASE_URL,
-        "final_score": final_score,
-        "results": results,
-    }
-    REPORT_PATH.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(f"Final Score: {final_score}")
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        # Test connection
+        client.models.list()
+    except Exception as e:
+        print(f"Warning: Could not verify API connection: {e}")
+        print("Proceeding anyway...")
+    
+    # Initialize environment
+    env = PythonCodeReviewEnvironment()
+    
+    # Run task(s)
+    tasks_to_run = [parsed.task] if parsed.task else list(task_ids())
+    scores = {}
+    
+    for task_id in tasks_to_run:
+        try:
+            score = run_task_episode(
+                env,
+                task_id,
+                client,
+                model,
+                max_steps=parsed.max_steps,
+                verbose=not parsed.quiet,
+            )
+            scores[task_id] = score
+        except Exception as e:
+            print(f"Error running task {task_id}: {e}")
+            scores[task_id] = 0.0
+    
+    # Print summary
+    print(f"\n{'='*70}")
+    print("SUMMARY")
+    print(f"{'='*70}")
+    for task_id, score in scores.items():
+        print(f"{task_id:30s} : {score:.3f}")
+    
+    if len(scores) > 1:
+        avg_score = sum(scores.values()) / len(scores)
+        print(f"{'Average Score':30s} : {avg_score:.3f}")
+    
+    return 0 if all(s > 0 for s in scores.values()) else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

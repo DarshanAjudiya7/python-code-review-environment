@@ -34,29 +34,25 @@ router = APIRouter(tags=["python-code-review"])
 
 @router.get("/", include_in_schema=False)
 def root() -> RedirectResponse:
-    """Redirect the root page to generated API docs."""
-
+    """Redirect root to API documentation."""
     return RedirectResponse(url="/docs")
 
 
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    """Health check route for Docker and Spaces."""
-
+    """Health check endpoint for deployment monitoring."""
     return python_env.health()
 
 
-@router.get("/tasks", response_model=list[TaskDescriptor])
-def list_tasks() -> list[TaskDescriptor]:
-    """List the bundled deterministic tasks."""
-
+@router.get("/tasks", response_model=list)
+def list_tasks() -> list:
+    """List all available deterministic tasks."""
     return python_env.list_task_summaries()
 
 
-@router.get("/tasks/{task_id}", response_model=TaskDescriptor)
-def get_task(task_id: str) -> TaskDescriptor:
-    """Return one task descriptor."""
-
+@router.get("/tasks/{task_id}", response_model=object)
+def get_task(task_id: str) -> object:
+    """Get a specific task by ID."""
     try:
         return python_env.get_task(task_id)
     except ValueError as exc:
@@ -65,10 +61,12 @@ def get_task(task_id: str) -> TaskDescriptor:
 
 @router.post("/tasks/{task_id}/grade", response_model=TaskGrade)
 def grade_task(task_id: str, payload: PythonCodeReviewAction) -> TaskGrade:
-    """Grade arbitrary candidate code outside a live episode."""
-
+    """Grade code submission for a task without running an episode."""
     if payload.action_type != "edit_code" or not payload.code:
-        raise HTTPException(status_code=400, detail="Send action_type=edit_code with code.")
+        raise HTTPException(
+            status_code=400, 
+            detail="Requires action_type='edit_code' with code parameter."
+        )
     try:
         return python_env.grade_task_submission(task_id=task_id, code=payload.code)
     except ValueError as exc:
@@ -76,9 +74,8 @@ def grade_task(task_id: str, payload: PythonCodeReviewAction) -> TaskGrade:
 
 
 @router.post("/state", response_model=PythonCodeReviewState)
-def post_state() -> RedirectResponse:
-    """Preserve POST compatibility for clients that do not issue GET /state."""
-
+def get_state_post() -> RedirectResponse:
+    """Redirect POST /state to GET for compatibility."""
     return RedirectResponse(url="/state", status_code=303)
 
 
@@ -86,12 +83,15 @@ app.include_router(router)
 
 
 def main(host: str = "0.0.0.0", port: int = 8000) -> None:
-    """Run the FastAPI app with uvicorn."""
-
+    """Run the FastAPI application with uvicorn."""
     import uvicorn
-
-    uvicorn.run(app, host=os.getenv("HOST", host), port=int(os.getenv("PORT", str(port))))
+    uvicorn.run(
+        app,
+        host=os.getenv("HOST", host),
+        port=int(os.getenv("PORT", str(port))),
+    )
 
 
 if __name__ == "__main__":
     main()
+

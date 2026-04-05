@@ -1,4 +1,4 @@
-"""Typed models shared across the Python PR review environment."""
+"""Typed models for Python code review and repair environment."""
 
 from __future__ import annotations
 
@@ -10,145 +10,100 @@ from openenv.core.env_server.types import Action, Observation, State
 
 
 Difficulty = Literal["easy", "medium", "hard"]
-Category = Literal["bug", "security", "performance", "maintainability", "testing"]
-Severity = Literal["critical", "warning", "info"]
-Operation = Literal["read_file", "add_finding", "submit_review", "finish"]
+TaskKind = Literal["syntax_fix", "bug_fix", "optimization"]
+ActionType = Literal["analyze_code", "edit_code", "run_tests", "submit_solution"]
 
 
-class ReviewFinding(BaseModel):
-    """Structured review finding submitted by the agent."""
-
-    file_path: str = Field(..., description="Repository-relative file path")
-    line: Optional[int] = Field(default=None, ge=1, description="1-based line number")
-    category: Category = Field(..., description="Finding category")
-    severity: Severity = Field(default="warning", description="Finding severity")
-    title: str = Field(..., min_length=3, description="Short finding title")
-    explanation: str = Field(..., min_length=5, description="Why the issue matters")
-    suggested_fix: str = Field(..., min_length=5, description="Concrete fix direction")
-
-
-class ReviewHistoryEntry(BaseModel):
-    """Compact step history exposed to the agent."""
+class HistoryEntry(BaseModel):
+    """Record of one action taken during an episode."""
 
     step: int = Field(..., ge=0)
-    operation: Operation = Field(..., description="Action taken on that step")
-    summary: str = Field(..., description="Human-readable result summary")
+    action_type: ActionType
+    status: str = Field(..., description="Outcome message")
+    reward: float = Field(...)
 
 
-class PythonReviewReward(BaseModel):
-    """Structured reward breakdown for one step."""
+class RewardDetails(BaseModel):
+    """Detailed reward breakdown for transparency."""
 
-    value: float = Field(..., description="Net scalar reward used by the environment")
-    matched_progress: float = Field(default=0.0, description="Positive reward for valid progress")
-    false_positive_penalty: float = Field(
-        default=0.0, description="Penalty applied to unsupported findings"
-    )
-    efficiency_penalty: float = Field(
-        default=-0.3, description="Penalty applied to wasteful repeated actions"
-    )
-    invalid_action_penalty: float = Field(
-        default=-0.5, description="Penalty applied to invalid actions"
-    )
-    reason: str = Field(default="", description="Short explanation of the reward outcome")
+    value: float = Field(..., description="Net scalar reward for this step")
+    syntax_reward: float = Field(default=0.0, description="Bonus for fixing syntax")
+    test_reward: float = Field(default=0.0, description="Reward from passing tests")
+    quality_bonus: float = Field(default=0.0, description="Bonus for code quality improvements")
+    correctness_bonus: float = Field(default=0.0, description="Bonus for full correctness")
+    invalid_action_penalty: float = Field(default=0.0, description="Penalty for invalid actions")
+    timeout_penalty: float = Field(default=0.0, description="Penalty for timeouts")
+    reason: str = Field(..., description="Explanation of reward")
 
 
-class TaskDescriptor(BaseModel):
-    """Public description of one PR review task."""
+class PythonCodeReviewAction(Action):
+    """Action space for code review environment."""
 
-    task_id: str = Field(..., description="Stable task identifier")
-    difficulty: Difficulty = Field(..., description="Difficulty bucket")
-    title: str = Field(..., description="Short task title")
-    goal: str = Field(..., description="Objective the reviewer should accomplish")
-    repo_summary: str = Field(..., description="High-level repository or PR context")
-    changed_files: List[str] = Field(default_factory=list)
-    available_files: List[str] = Field(default_factory=list)
-    max_steps: int = Field(..., ge=1, description="Maximum number of actions in the episode")
+    action_type: ActionType = Field(..., description="Type of action to perform")
+    code: Optional[str] = Field(default=None, description="New code for edit_code actions")
 
 
-class PythonReviewAction(Action):
-    """Action accepted by the PR review environment."""
+class PythonCodeReviewObservation(Observation):
+    """Observation returned by reset() and step()."""
 
-    operation: Operation = Field(..., description="The action to perform")
-    path: Optional[str] = Field(
-        default=None,
-        description="Repository-relative path for read_file actions",
-    )
-    finding: Optional[ReviewFinding] = Field(
-        default=None,
-        description="Structured finding for add_finding actions",
-    )
-
-
-class PythonReviewObservation(Observation):
-    """Observation returned by reset and step."""
-
-    task_id: str = Field(..., description="Active task identifier")
-    difficulty: Difficulty = Field(..., description="Task difficulty bucket")
-    goal: str = Field(..., description="Task objective shown to the agent")
-    repo_summary: str = Field(..., description="High-level PR or repo context")
-    changed_files: List[str] = Field(default_factory=list)
-    visible_diff: str = Field(..., description="Visible diff plus any opened file context")
-    available_files: List[str] = Field(default_factory=list)
-    review_history: List[ReviewHistoryEntry] = Field(default_factory=list)
-    attempts_remaining: int = Field(default=0, ge=0)
-    last_action_status: str = Field(default="", description="Feedback for the latest action")
-    score: float = Field(default=0.0, ge=0.0, le=1.0)
-    reward_details: PythonReviewReward = Field(default_factory=lambda: PythonReviewReward(value=0.0))
+    task_id: str = Field(..., description="Current task identifier")
+    difficulty: Difficulty = Field(..., description="Task difficulty level")
+    task_description: str = Field(..., description="Detailed task description")
+    current_code: str = Field(..., description="Current code state")
+    errors: str = Field(..., description="Syntax/compilation errors, if any")
+    test_results: str = Field(..., description="Results from test execution")
+    visible_tests: List[str] = Field(default_factory=list, description="Public test cases")
+    history: List[HistoryEntry] = Field(default_factory=list, description="Action history")
+    attempts_remaining: int = Field(..., ge=0, description="Actions left in episode")
+    score: float = Field(..., ge=0.0, le=1.0, description="Current episode score")
+    reward: RewardDetails = Field(default_factory=lambda: RewardDetails(value=0.0, reason="Reset"))
 
 
-class PythonReviewState(State):
-    """Current non-secret environment state."""
+class PythonCodeReviewState(State):
+    """Exposed environment state."""
 
+    episode_id: str = Field(..., description="Unique episode identifier")
+    step_count: int = Field(default=0, ge=0)
     task_id: Optional[str] = Field(default=None)
     difficulty: Optional[Difficulty] = Field(default=None)
+    task_kind: Optional[TaskKind] = Field(default=None)
     attempts_remaining: int = Field(default=0, ge=0)
-    opened_files: List[str] = Field(default_factory=list)
-    submitted_findings: List[ReviewFinding] = Field(default_factory=list)
-    review_history: List[ReviewHistoryEntry] = Field(default_factory=list)
+    current_code: str = Field(default="")
+    errors: str = Field(default="")
+    test_results: str = Field(default="")
+    history: List[HistoryEntry] = Field(default_factory=list)
     score: float = Field(default=0.0, ge=0.0, le=1.0)
     done: bool = Field(default=False)
 
 
-class TaskSummary(BaseModel):
-    """Compact task listing for API consumers."""
+class TaskDescriptor(BaseModel):
+    """Public task metadata."""
 
-    task_id: str
-    difficulty: Difficulty
-    title: str
-    goal: str
-
-
-class TaskSubmission(BaseModel):
-    """Offline grader input."""
-
-    findings: List[ReviewFinding] = Field(default_factory=list)
+    task_id: str = Field(..., description="Stable task identifier")
+    title: str = Field(..., description="Human-readable title")
+    difficulty: Difficulty = Field(..., description="Difficulty level")
+    task_kind: TaskKind = Field(..., description="Type of task")
+    task_description: str = Field(..., description="Full task description")
+    starter_code: str = Field(..., description="Initial broken code")
+    visible_tests: List[str] = Field(default_factory=list, description="Public test cases")
+    max_steps: int = Field(..., ge=1, description="Maximum steps allowed")
 
 
 class TaskGrade(BaseModel):
-    """Offline grader result used by tests and helper routes."""
+    """Grading result for task submission."""
 
-    score: float = Field(..., ge=0.0, le=1.0)
-    matched_issue_ids: List[str] = Field(default_factory=list)
-    false_positives: int = Field(default=0, ge=0)
-    duplicate_findings: int = Field(default=0, ge=0)
-    matched_weight: float = Field(default=0.0, ge=0.0, le=1.0)
+    score: float = Field(..., ge=0.0, le=1.0, description="Overall score")
+    syntax_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    tests_passed: int = Field(default=0, ge=0)
+    tests_total: int = Field(default=0, ge=0)
+    quality_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    timed_out: bool = Field(default=False)
+    details: Dict[str, Any] = Field(default_factory=dict)
 
 
 class HealthResponse(BaseModel):
-    """Health payload for deployment checks."""
+    """Health check response."""
 
     status: Literal["ok"] = "ok"
-    environment: str = "python_pr_review_env"
+    environment: str = "python_code_review_env"
     task_count: int = Field(default=0, ge=0)
-
-
-class DeleteResponse(BaseModel):
-    """Acknowledgement payload for cleanup routes."""
-
-    detail: str
-
-
-def reward_metadata(reward: PythonReviewReward) -> Dict[str, Any]:
-    """Serialize reward details for OpenEnv metadata payloads."""
-
-    return reward.model_dump()

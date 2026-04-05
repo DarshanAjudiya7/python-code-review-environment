@@ -14,12 +14,13 @@ def grade_syntax_task(candidate_code: str, task: TaskSpec) -> TaskGrade:
 
     error = syntax_error_message(candidate_code)
     diff_score = normalized_diff_score(candidate_code, task.reference_code)
+    style_base = style_score(candidate_code, task.style_max_line_length)
+    
     if not error:
         return TaskGrade(
             score=1.0,
             syntax_score=1.0,
-            diff_score=diff_score,
-            style_score=style_score(candidate_code, task.style_max_line_length),
+            quality_score=style_base,
             details={"compile_error": ""},
         )
 
@@ -27,7 +28,7 @@ def grade_syntax_task(candidate_code: str, task: TaskSpec) -> TaskGrade:
     return TaskGrade(
         score=partial,
         syntax_score=0.0,
-        diff_score=diff_score,
+        quality_score=diff_score * style_base,
         details={"compile_error": error},
     )
 
@@ -42,6 +43,7 @@ def grade_bug_fix_task(candidate_code: str, task: TaskSpec, include_hidden: bool
     tests = list(task.visible_tests)
     if include_hidden:
         tests.extend(task.hidden_tests)
+    
     execution = run_pytest_suite(candidate_code, tests, timeout_s=3.0)
     if execution.timed_out:
         return TaskGrade(
@@ -50,16 +52,19 @@ def grade_bug_fix_task(candidate_code: str, task: TaskSpec, include_hidden: bool
             tests_passed=execution.passed,
             tests_total=execution.total,
             timed_out=True,
-            details={"tests": execution.output},
+            details={"compile_error": "", "tests": execution.output},
         )
 
     pass_fraction = execution.passed / execution.total if execution.total else 0.0
+    quality = style_score(candidate_code, task.style_max_line_length)
+    
     return TaskGrade(
         score=clamp_score(pass_fraction),
         syntax_score=1.0,
         tests_passed=execution.passed,
         tests_total=execution.total,
-        details={"tests": execution.output},
+        quality_score=quality,
+        details={"compile_error": "", "tests": execution.output},
     )
 
 
