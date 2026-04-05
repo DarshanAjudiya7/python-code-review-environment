@@ -4,7 +4,17 @@ type: space
 runtime: fastapi
 app: server.app:app
 port: 8000
+
 metadata:
-  description: Deterministic Python code review and repair benchmark for OpenEnv
+  description: "Production-grade Python code review and repair benchmark for OpenEnv"
   domain: code-review
   task_count: 3
+  task_ids:
+    - syntax-fix-easy
+    - bug-fix-medium
+    - optimization-hard
+  difficulty_levels:
+    - easy
+    - medium
+    - hard
+
