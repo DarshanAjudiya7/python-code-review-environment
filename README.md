@@ -1,4 +1,15 @@
-# Python Code Review Environment 🐍
+---
+title: Python Code Review Environment Server
+sdk: docker
+app_port: 8000
+base_path: /web
+pinned: false
+tags:
+  - openenv
+  - code-review
+---
+
+# Python Code Review Environment
 
 A production-grade OpenEnv environment for Python code review, repair, and optimization tasks. This environment simulates real-world developer workflows where an AI agent reviews, fixes, and improves Python code.
 

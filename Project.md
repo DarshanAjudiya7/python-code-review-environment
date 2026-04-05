@@ -1,4 +1,6 @@
-# Python Env Project Guide
+python inference.py --model gpt-3.5-turbo --base-url "http://localhost:8000/v1"
+python inference.py --model gemini-2.0-flash --base-url "https://generativelanguage.googleapis.com/openai/"
+python inference.py --model deepseek-chat --base-url "https://api.deepseek.com"# Python Env Project Guide
 
 This document explains how to work with the `python_env` project end to end:
 
@@ -150,6 +152,100 @@ It uses AST inspection to detect:
 - `print()` used in application logic
 
 This is not the task grader. It is the direct-review helper.
+
+### Reward System
+
+The reward system is **dynamic and multi-component**, designed to provide meaningful feedback at every step of the agent's learning process.
+
+#### Reward Architecture
+
+The system computes rewards using **6 independent components**:
+
+1. **Progress Reward** (max +0.25)
+   - Awarded when the agent improves the score from one step to the next
+   - Formula: `min(PROGRESS_SCALE * score_delta, 0.25)`
+   - Encourages continuous improvement
+
+2. **Syntax Reward** (max +0.35)
+   - One-time bonus awarded for fixing syntax errors (first time compiling)
+   - Applied once per episode when code transitions from uncompilable to compilable
+   - Acknowledges the critical first step of making code valid
+
+3. **Test Reward** (max +0.20)
+   - Based on improvement in test pass rate
+   - Computed as: `min(TEST_PASS_REWARD_SCALE * test_improvement_fraction, 0.20)`
+   - Rewards incremental progress on passing more tests
+
+4. **Quality Reward** (max +0.15)
+   - Based on AST-detected code quality metrics
+   - Rewards improvements in code structure, readability, and best practices
+   - Uses deterministic grader feedback
+
+5. **Stagnation Penalty** (−0.10)
+   - Applied when the agent takes action but code doesn't change
+   - Encourages the agent to edit the code rather than analyze repeatedly
+   - Configurable via `STAGNATION_PENALTY` constant
+
+6. **Regression Penalty** (scale −0.20)
+   - Applied when score decreases from previous step
+   - Formula: `REGRESSION_PENALTY_SCALE * abs(score_delta)`
+   - Discourages actions that make code worse
+
+#### Reward Constants
+
+Defined at the top of `server/env.py`:
+
+```python
+SYNTAX_FIX_BONUS = 0.35          # One-time syntax reward
+TEST_PASS_REWARD_SCALE = 0.30    # Per test improvement
+QUALITY_BONUS_SCALE = 0.15       # Code quality improvement
+PROGRESS_SCALE = 0.25             # Score improvement
+COMPLETION_BONUS = 0.50           # Full correctness bonus
+INVALID_ACTION_PENALTY = 0.15     # For unsupported actions
+STAGNATION_PENALTY = 0.10         # For unchanged code
+REGRESSION_PENALTY_SCALE = 0.20   # For score decline
+TIMEOUT_PENALTY = 0.15            # For execution timeout
+```
+
+#### Final Reward Computation
+
+The final reward is:
+
+```
+total = progress + syntax + test + quality - stagnation - regression
+final_reward = clamp(total, -1.0, +1.0)
+```
+
+The result is always between −1.0 and +1.0, providing bounded, interpretable feedback.
+
+#### RewardDetails: Transparent Feedback
+
+Every reward is returned as a `RewardDetails` object with these fields:
+
+- `value`: The scalar reward for this step
+- `syntax_reward`: Contribution from syntax fixes
+- `test_reward`: Contribution from test improvements
+- `quality_bonus`: Contribution from code quality
+- `progress_delta`: Contribution from score improvement
+- `stagnation_penalty`: Penalty for unchanged code
+- `regression_penalty`: Penalty for score decline
+- `prev_score` / `curr_score`: Score before and after the action
+- `code_changed`: Whether the action modified the code
+- `reason`: Human-readable explanation of the reward
+
+This transparency is crucial for:
+- Debugging agent behavior
+- Understanding what drives reward
+- Tuning the constants
+- Training supervised models on reward components
+
+#### Why This Design Helps Agents Learn
+
+1. **Non-Constant**: Different actions produce different rewards, enabling meaningful gradient signals
+2. **Progressive**: Early bonuses (syntax) are high; later improvements are smaller, promoting efficiency
+3. **Transparent**: Detailed component breakdown helps agents understand what matters
+4. **Bounded**: Clamping to [−1, 1] prevents reward hacking and explosion
+5. **Balanced**: Positive and negative signals teach precision and recall together
 
 ### `server/code_review_environment.py`
 

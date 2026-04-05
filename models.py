@@ -24,16 +24,61 @@ class HistoryEntry(BaseModel):
 
 
 class RewardDetails(BaseModel):
-    """Detailed reward breakdown for transparency."""
+    """Detailed reward breakdown for transparent agent feedback.
+    
+    The reward system is dynamic and multi-component, with 6 independent sources:
+    
+    1. Progress Reward (max +0.25)
+       - Awarded for score improvement from previous step
+       - Formula: min(PROGRESS_SCALE * score_delta, 0.25)
+       - Encourages continuous improvement
+    
+    2. Syntax Reward (max +0.35)
+       - One-time bonus for fixing syntax errors (first compile)
+       - Applied when code transitions from uncompilable to compilable
+       - Acknowledges the critical first step of valid code
+    
+    3. Test Reward (max +0.20)
+       - Based on improvement in test pass rate
+       - Formula: min(TEST_PASS_REWARD_SCALE * test_improvement, 0.20)
+       - Rewards incremental test progress
+    
+    4. Quality Reward (max +0.15)
+       - Based on AST-detected code quality metrics
+       - Rewards improvements in structure, readability, best practices
+       - Uses deterministic grader feedback
+    
+    5. Stagnation Penalty (−0.10)
+       - Applied when agent acts but code doesn't change
+       - Encourages editing rather than repeated analysis
+       - Configurable via STAGNATION_PENALTY constant
+    
+    6. Regression Penalty (scale −0.20)
+       - Applied when score decreases from previous step
+       - Formula: REGRESSION_PENALTY_SCALE * abs(score_delta)
+       - Discourages actions that make code worse
+    
+    Final Reward: clamp(progress + syntax + test + quality - stagnation - regression, -1.0, +1.0)
+    
+    The result is always bounded in [-1.0, +1.0], providing interpretable feedback for learning.
+    """
 
-    value: float = Field(..., description="Net scalar reward for this step")
-    syntax_reward: float = Field(default=0.0, description="Bonus for fixing syntax")
-    test_reward: float = Field(default=0.0, description="Reward from passing tests")
-    quality_bonus: float = Field(default=0.0, description="Bonus for code quality improvements")
-    correctness_bonus: float = Field(default=0.0, description="Bonus for full correctness")
-    invalid_action_penalty: float = Field(default=0.0, description="Penalty for invalid actions")
-    timeout_penalty: float = Field(default=0.0, description="Penalty for timeouts")
-    reason: str = Field(..., description="Explanation of reward")
+    value: float = Field(..., description="Net scalar reward for this step (bounded in [-1.0, +1.0])")
+    syntax_reward: float = Field(default=0.0, description="Bonus for fixing syntax errors (max +0.35)")
+    test_reward: float = Field(default=0.0, description="Reward from test improvements (max +0.20)")
+    quality_bonus: float = Field(default=0.0, description="Bonus for code quality improvements (max +0.15)")
+    correctness_bonus: float = Field(default=0.0, description="Bonus for full correctness (max +0.50)")
+    progress_delta: float = Field(default=0.0, description="Reward from score improvement (max +0.25)")
+    stagnation_penalty: float = Field(default=0.0, description="Penalty for unchanged code (−0.10)")
+    regression_penalty: float = Field(default=0.0, description="Penalty for score decline (scale −0.20)")
+    invalid_action_penalty: float = Field(default=0.0, description="Penalty for invalid actions (−0.15)")
+    timeout_penalty: float = Field(default=0.0, description="Penalty for execution timeout (−0.15)")
+    reason: str = Field(..., description="Human-readable explanation of the reward")
+    
+    # Debug information for transparency
+    prev_score: float = Field(default=0.0, description="Score before this step")
+    curr_score: float = Field(default=0.0, description="Score after this step")
+    code_changed: bool = Field(default=False, description="Whether the action modified the code")
 
 
 class PythonCodeReviewAction(Action):
@@ -47,7 +92,9 @@ class PythonCodeReviewObservation(Observation):
     """Observation returned by reset() and step()."""
 
     task_id: str = Field(..., description="Current task identifier")
+    title: str = Field(default="", description="Human-readable task title")
     difficulty: Difficulty = Field(..., description="Task difficulty level")
+    task_kind: Optional[TaskKind] = Field(default=None, description="Task type")
     task_description: str = Field(..., description="Detailed task description")
     current_code: str = Field(..., description="Current code state")
     errors: str = Field(..., description="Syntax/compilation errors, if any")
@@ -55,8 +102,12 @@ class PythonCodeReviewObservation(Observation):
     visible_tests: List[str] = Field(default_factory=list, description="Public test cases")
     history: List[HistoryEntry] = Field(default_factory=list, description="Action history")
     attempts_remaining: int = Field(..., ge=0, description="Actions left in episode")
+    last_action_status: str = Field(default="", description="Outcome message from the last action")
     score: float = Field(..., ge=0.0, le=1.0, description="Current episode score")
-    reward: RewardDetails = Field(default_factory=lambda: RewardDetails(value=0.0, reason="Reset"))
+    reward_details: RewardDetails = Field(
+        default_factory=lambda: RewardDetails(value=0.0, reason="Reset"),
+        description="Detailed reward breakdown for the last action",
+    )
 
 
 class PythonCodeReviewState(State):

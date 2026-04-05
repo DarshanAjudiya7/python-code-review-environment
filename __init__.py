@@ -1,20 +1,29 @@
 """Public package API for the Python code review OpenEnv benchmark."""
 
-from .client import CodeReviewEnv, MyEnv, PythonEnv
-from .models import (
-    HealthResponse,
-    HistoryEntry,
-    PythonCodeReviewAction,
-    PythonCodeReviewObservation,
-    PythonCodeReviewState,
-    PythonReviewAction,
-    PythonReviewObservation,
-    PythonReviewReward,
-    PythonReviewState,
-    RewardDetails,
-    TaskDescriptor,
-    TaskGrade,
-)
+try:
+    from .client import CodeReviewEnv, MyEnv, PythonEnv
+    from .models import (
+        HealthResponse,
+        HistoryEntry,
+        PythonCodeReviewAction,
+        PythonCodeReviewObservation,
+        PythonCodeReviewState,
+        RewardDetails,
+        TaskDescriptor,
+        TaskGrade,
+    )
+except ImportError:  # pragma: no cover
+    from client import CodeReviewEnv, MyEnv, PythonEnv
+    from models import (
+        HealthResponse,
+        HistoryEntry,
+        PythonCodeReviewAction,
+        PythonCodeReviewObservation,
+        PythonCodeReviewState,
+        RewardDetails,
+        TaskDescriptor,
+        TaskGrade,
+    )
 
 __all__ = [
     "PythonEnv",
@@ -23,13 +32,9 @@ __all__ = [
     "PythonCodeReviewAction",
     "PythonCodeReviewObservation",
     "PythonCodeReviewState",
-    "PythonReviewAction",
-    "PythonReviewObservation",
-    "PythonReviewReward",
-    "PythonReviewState",
-    "RewardDetails",
-    "HistoryEntry",
-    "TaskDescriptor",
-    "TaskGrade",
-    "HealthResponse",
+    HealthResponse,
+    HistoryEntry,
+    RewardDetails,
+    TaskDescriptor,
+    TaskGrade,
 ]

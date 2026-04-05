@@ -165,12 +165,16 @@ def run_task_episode(
         
         # Execute action
         observation = env.step(action)
-        total_reward += observation.reward.value
+        step_reward = float(observation.reward or 0.0)
+        total_reward += step_reward
         
         if verbose:
             print(f"Step {step_count}: {action.action_type}")
-            if observation.reward.value != 0:
-                print(f"  Reward: {observation.reward.value:+.4f} ({observation.reward.reason})")
+            print(f"  Reward: {step_reward:+.4f} Done: {observation.done}")
+            if step_reward != 0 or observation.reward_details.reason:
+                print(f"  Reward Details: {observation.reward_details.reason}")
+            if observation.last_action_status:
+                print(f"  Status: {observation.last_action_status}")
             if observation.errors:
                 print(f"  Errors: {observation.errors}")
             if observation.test_results:
