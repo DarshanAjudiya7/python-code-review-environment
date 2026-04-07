@@ -8,10 +8,10 @@ version = "0.2.0"
 description = "Deterministic Python code review and repair benchmark environment for OpenEnv"
 requires-python = ">=3.10"
 dependencies = [
-    "openenv-core[core]>=0.2.2",
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
     "openai>=1.40.0",
+    "pydantic>=2.0.0",
     "pytest>=8.0.0",
 ]
 
@@ -22,12 +22,11 @@ dev = [
 ]
 
 [project.scripts]
-server = "python_env.server.app:main"
+server = "server.app:main"
 
 [tool.setuptools]
 include-package-data = true
-packages = ["python_env", "python_env.server"]
-package-dir = { "python_env" = ".", "python_env.server" = "server" }
+packages = ["server", "server.graders", "server.tasks"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

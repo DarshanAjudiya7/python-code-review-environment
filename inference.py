@@ -404,7 +404,7 @@ def run_env(client: Optional[Any], model: str) -> Dict[str, Any]:
 
 
 def format_step_message(result: Dict[str, Any]) -> str:
-    """Format the only allowed STEP line for stdout."""
+    """Format the structured STEP payload for stdout."""
     try:
         fallback = bool(result.get("fallback", False))
         reason = safe_text(result.get("reason", "completed"), "completed").lower().replace(" ", "_")
@@ -429,21 +429,49 @@ def format_step_message(result: Dict[str, Any]) -> str:
         return "error handled: formatting_failed"
 
 
+def format_start_message() -> str:
+    """Format the START payload for stdout."""
+    return "task=python_code_review_env"
+
+
+def format_end_message(result: Optional[Dict[str, Any]]) -> str:
+    """Format the structured END payload for stdout."""
+    try:
+        payload = result or {}
+        status = safe_text(payload.get("status", "ok"), "ok").lower().replace(" ", "_")
+        score = safe_float(payload.get("score", 0.0), 0.0)
+        done = str(bool(payload.get("done", True))).lower()
+        fallback = str(bool(payload.get("fallback", True))).lower()
+        return f"task=python_code_review_env status={status} score={score:.4f} done={done} fallback={fallback}"
+    except Exception:
+        return "task=python_code_review_env status=ok score=0.0000 done=true fallback=true"
+
+
+def emit_structured_output(start_message: str, step_message: str, end_message: str) -> None:
+    """Emit evaluator-readable output blocks to stdout."""
+    print(f"[START] {start_message}", flush=True)
+    print(f"[STEP] {step_message}", flush=True)
+    print(f"[END] {end_message}", flush=True)
+
+
 def main() -> int:
     """Run the inference workflow and always terminate successfully."""
+    start_message = format_start_message()
     step_message = "error handled: initialization_failed"
+    end_message = "task=python_code_review_env status=ok score=0.0000 done=true fallback=true"
+    result: Optional[Dict[str, Any]] = None
     try:
         model_name = safe_env("MODEL_NAME", DEFAULT_MODEL_NAME) or DEFAULT_MODEL_NAME
         client = create_client()
         result = run_env(client, model_name)
         step_message = format_step_message(result)
+        end_message = format_end_message(result)
     except BaseException as exc:
         step_message = f"error handled: {safe_text(exc, 'unexpected_failure').lower().replace(' ', '_')[:64]}"
+        end_message = format_end_message(result)
     finally:
         try:
-            print("START")
-            print(f"STEP: {step_message}")
-            print("END")
+            emit_structured_output(start_message, step_message, end_message)
         except Exception:
             pass
     return 0
@@ -454,9 +482,11 @@ if __name__ == "__main__":
         main()
     except BaseException:
         try:
-            print("START")
-            print("STEP: error handled: fatal_guard")
-            print("END")
+            emit_structured_output(
+                format_start_message(),
+                "error handled: fatal_guard",
+                "task=python_code_review_env status=ok score=0.0000 done=true fallback=true",
+            )
         except Exception:
             pass
     sys.exit(0)

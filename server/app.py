@@ -5,18 +5,28 @@ from __future__ import annotations
 import os
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
-from compat import create_app
-
-from models import (
-    HealthResponse,
-    PythonCodeReviewAction,
-    PythonCodeReviewObservation,
-    PythonCodeReviewState,
-    TaskDescriptor,
-    TaskGrade,
-)
+try:
+    from compat import create_app
+    from models import (
+        HealthResponse,
+        PythonCodeReviewAction,
+        PythonCodeReviewObservation,
+        PythonCodeReviewState,
+        TaskDescriptor,
+        TaskGrade,
+    )
+except Exception:
+    from .compat import create_app
+    from .models import (
+        HealthResponse,
+        PythonCodeReviewAction,
+        PythonCodeReviewObservation,
+        PythonCodeReviewState,
+        TaskDescriptor,
+        TaskGrade,
+    )
 from server.env import PythonCodeReviewEnvironment
 
 
@@ -36,9 +46,76 @@ router = APIRouter(tags=["python-code-review"])
 
 
 @router.get("/", include_in_schema=False)
-def root() -> RedirectResponse:
-    """Redirect root to API documentation."""
-    return RedirectResponse(url="/docs")
+def root() -> HTMLResponse:
+    """Serve a small homepage with links and a live demo button."""
+    return HTMLResponse(
+        """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>python_code_review_env</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 860px; margin: 40px auto; padding: 0 16px; color: #111827; }
+    .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin: 16px 0; }
+    button { background: #111827; color: white; border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer; }
+    a { color: #2563eb; text-decoration: none; }
+    pre { background: #f3f4f6; padding: 16px; border-radius: 10px; overflow: auto; white-space: pre-wrap; }
+    .muted { color: #6b7280; }
+  </style>
+</head>
+<body>
+  <h1>python_code_review_env</h1>
+  <p class="muted">This Space is an API environment. Use the live demo below or open the API docs.</p>
+  <div class="card">
+    <p><a href="/docs">Open API Docs</a></p>
+    <p><a href="/health">Health</a></p>
+    <p><a href="/tasks">Tasks</a></p>
+    <p><a href="/schema">Schema</a></p>
+  </div>
+  <div class="card">
+    <h3>Live Demo</h3>
+    <p>Runs one safe reset + analyze step and shows the actual JSON output.</p>
+    <button onclick="runDemo()">Run demo</button>
+    <pre id="output">Click "Run demo" to see output.</pre>
+  </div>
+  <script>
+    async function runDemo() {
+      const output = document.getElementById('output');
+      output.textContent = 'Loading...';
+      try {
+        const response = await fetch('/demo');
+        const data = await response.json();
+        output.textContent = JSON.stringify(data, null, 2);
+      } catch (error) {
+        output.textContent = 'Demo failed: ' + String(error);
+      }
+    }
+  </script>
+</body>
+</html>
+        """
+    )
+
+
+@router.get("/web", include_in_schema=False)
+@router.get("/web/", include_in_schema=False)
+def root_web() -> HTMLResponse:
+    """Serve the same homepage for Hugging Face Spaces base-path requests."""
+    return root()
+
+
+@router.get("/demo", include_in_schema=False)
+def demo() -> dict:
+    """Return a live demo payload so users can see actual environment output."""
+    demo_env = PythonCodeReviewEnvironment(verbose=False)
+    observation = demo_env.reset(task_id="syntax-fix-easy")
+    next_observation = demo_env.step(PythonCodeReviewAction(action_type="analyze_code"))
+    return {
+        "reset": observation.model_dump(),
+        "step": next_observation.model_dump(),
+    }
 
 
 @router.get("/health", response_model=HealthResponse)

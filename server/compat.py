@@ -1,4 +1,4 @@
-"""Lightweight OpenEnv-compatible helpers for local and container builds."""
+"""Lightweight OpenEnv-compatible helpers for self-contained server builds."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ StateT = TypeVar("StateT", bound="State")
 
 
 def install_openenv_fastmcp_compat() -> None:
-    """Compatibility hook retained for callers; no-op in the local shim."""
+    """No-op hook retained for compatibility with the root codepath."""
     return None
 
 

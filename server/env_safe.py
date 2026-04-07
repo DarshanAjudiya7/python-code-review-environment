@@ -5,18 +5,32 @@ from __future__ import annotations
 from typing import Any, Optional
 from uuid import uuid4
 
-from compat import Environment
-from graders import grade_task
-from models import (
-    HealthResponse,
-    HistoryEntry,
-    PythonCodeReviewAction,
-    PythonCodeReviewObservation,
-    PythonCodeReviewState,
-    RewardDetails,
-    TaskGrade,
-)
-from tasks import TaskSpec, get_task as load_task, list_task_summaries, task_ids
+try:
+    from compat import Environment
+    from graders import grade_task
+    from models import (
+        HealthResponse,
+        HistoryEntry,
+        PythonCodeReviewAction,
+        PythonCodeReviewObservation,
+        PythonCodeReviewState,
+        RewardDetails,
+        TaskGrade,
+    )
+    from tasks import TaskSpec, get_task as load_task, list_task_summaries, task_ids
+except Exception:
+    from .compat import Environment
+    from .graders import grade_task
+    from .models import (
+        HealthResponse,
+        HistoryEntry,
+        PythonCodeReviewAction,
+        PythonCodeReviewObservation,
+        PythonCodeReviewState,
+        RewardDetails,
+        TaskGrade,
+    )
+    from .tasks import TaskSpec, get_task as load_task, list_task_summaries, task_ids
 
 
 INVALID_ACTION_PENALTY = 0.10
@@ -489,4 +503,3 @@ class PythonCodeReviewEnvironment(
 
 PythonEnvironment = PythonCodeReviewEnvironment
 CodeReviewEnvironment = PythonCodeReviewEnvironment
-

@@ -2,14 +2,30 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Dict
 
 from compat import install_openenv_fastmcp_compat
 
 install_openenv_fastmcp_compat()
 
-from openenv.core import EnvClient
-from openenv.core.client_types import StepResult
+try:
+    from openenv.core import EnvClient
+    from openenv.core.client_types import StepResult
+except Exception:  # pragma: no cover
+    class EnvClient:  # type: ignore[override]
+        """Lightweight fallback placeholder when openenv-core is unavailable."""
+
+        def __class_getitem__(cls, item):  # type: ignore[no-untyped-def]
+            return cls
+
+    @dataclass
+    class StepResult:  # type: ignore[override]
+        """Fallback step result used for import safety."""
+
+        observation: object
+        reward: object = None
+        done: bool = False
 
 from models import (
     HistoryEntry,
