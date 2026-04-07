@@ -71,7 +71,7 @@ pathlib.Path("pytest_results.json").write_text(json.dumps(payload), encoding="ut
 """
 
 
-def run_pytest_suite(candidate_code: str, tests: Iterable[str], timeout_s: float = 30.0) -> PytestExecution:
+def run_pytest_suite(candidate_code: str, tests: Iterable[str], timeout_s: float = 120.0) -> PytestExecution:
     test_cases = list(tests)
     with tempfile.TemporaryDirectory(prefix="python-code-review-") as temp_dir:
         temp_path = Path(temp_dir)

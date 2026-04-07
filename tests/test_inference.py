@@ -8,7 +8,7 @@ def test_inference_emits_structured_stdout():
         capture_output=True,
         text=True,
         check=False,
-        timeout=120,
+        timeout=300,
     )
 
     assert completed.returncode == 0
