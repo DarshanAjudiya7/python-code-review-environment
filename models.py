@@ -6,12 +6,14 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from openenv.core.env_server.types import Action, Observation, State
+from compat import Action, Observation, State
 
 
 Difficulty = Literal["easy", "medium", "hard"]
 TaskKind = Literal["syntax_fix", "bug_fix", "optimization"]
 ActionType = Literal["analyze_code", "edit_code", "run_tests", "submit_solution"]
+Category = Literal["bug", "security", "performance", "maintainability", "style", "testing"]
+Severity = Literal["critical", "warning", "info"]
 
 
 class HistoryEntry(BaseModel):
@@ -133,11 +135,56 @@ class TaskDescriptor(BaseModel):
     task_id: str = Field(..., description="Stable task identifier")
     title: str = Field(..., description="Human-readable title")
     difficulty: Difficulty = Field(..., description="Difficulty level")
-    task_kind: TaskKind = Field(..., description="Type of task")
-    task_description: str = Field(..., description="Full task description")
-    starter_code: str = Field(..., description="Initial broken code")
+    task_kind: Optional[TaskKind] = Field(default=None, description="Type of task")
+    task_description: str = Field(default="", description="Full task description")
+    starter_code: str = Field(default="", description="Initial broken code")
     visible_tests: List[str] = Field(default_factory=list, description="Public test cases")
+    goal: str = Field(default="", description="Optional goal summary for review-style tasks")
+    repo_summary: str = Field(default="", description="Optional repository context")
+    changed_files: List[str] = Field(default_factory=list, description="Changed files for review-style tasks")
+    available_files: List[str] = Field(default_factory=list, description="Browsable files for review-style tasks")
     max_steps: int = Field(..., ge=1, description="Maximum steps allowed")
+
+
+class TaskSummary(BaseModel):
+    """Lightweight task metadata for list endpoints."""
+
+    task_id: str = Field(..., description="Stable task identifier")
+    difficulty: Difficulty = Field(..., description="Difficulty level")
+    title: str = Field(..., description="Human-readable title")
+    goal: str = Field(default="", description="Optional task goal")
+
+
+class ReviewFinding(BaseModel):
+    """Structured code review finding used by auxiliary review utilities."""
+
+    title: str = Field(..., description="Short human-readable finding title")
+    file_path: str = Field(default="", description="Optional file path")
+    line: Optional[int] = Field(default=None, ge=1, description="Optional 1-based line number")
+    category: Category = Field(default="bug", description="Finding category")
+    severity: Severity = Field(default="warning", description="Finding severity")
+    rationale: str = Field(default="", description="Why this matters")
+    recommendation: str = Field(default="", description="Suggested remediation")
+    rule_id: str = Field(default="", description="Stable detector or rubric identifier")
+
+    @property
+    def explanation(self) -> str:
+        """Backward-compatible alias used by older grading helpers."""
+        return self.rationale
+
+    @property
+    def suggested_fix(self) -> str:
+        """Backward-compatible alias used by older grading helpers."""
+        return self.recommendation
+
+
+class DirectReviewResponse(BaseModel):
+    """Response payload for deterministic direct-review utilities."""
+
+    issues: List[ReviewFinding] = Field(default_factory=list)
+    summary: str = Field(default="")
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    improved_code: Optional[str] = Field(default=None)
 
 
 class TaskGrade(BaseModel):
@@ -148,7 +195,12 @@ class TaskGrade(BaseModel):
     tests_passed: int = Field(default=0, ge=0)
     tests_total: int = Field(default=0, ge=0)
     quality_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    runtime_score: float = Field(default=0.0, ge=0.0, le=1.0)
     timed_out: bool = Field(default=False)
+    matched_issue_ids: List[str] = Field(default_factory=list)
+    false_positives: int = Field(default=0, ge=0)
+    duplicate_findings: int = Field(default=0, ge=0)
+    matched_weight: float = Field(default=0.0, ge=0.0, le=1.0)
     details: Dict[str, Any] = Field(default_factory=dict)
 
 

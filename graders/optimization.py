@@ -35,57 +35,60 @@ def benchmark_runtime(candidate_code: str, task: TaskSpec) -> tuple[float, bool,
     """Benchmark runtime deterministically against the starter implementation."""
 
     assert task.benchmark_entrypoint is not None
-    with tempfile.TemporaryDirectory(prefix="python-code-review-bench-") as temp_dir:
-        temp_path = Path(temp_dir)
-        (temp_path / "candidate.py").write_text(candidate_code, encoding="utf-8")
-        (temp_path / "starter.py").write_text(task.starter_code, encoding="utf-8")
-        (temp_path / "candidate_runner.py").write_text(_benchmark_script(task), encoding="utf-8")
+    try:
+        with tempfile.TemporaryDirectory(prefix="python-code-review-bench-") as temp_dir:
+            temp_path = Path(temp_dir)
+            (temp_path / "candidate.py").write_text(candidate_code, encoding="utf-8")
+            (temp_path / "starter.py").write_text(task.starter_code, encoding="utf-8")
+            (temp_path / "candidate_runner.py").write_text(_benchmark_script(task), encoding="utf-8")
 
-        starter_script = _benchmark_script(task).replace("from candidate import", "from starter import")
-        (temp_path / "starter_runner.py").write_text(starter_script, encoding="utf-8")
+            starter_script = _benchmark_script(task).replace("from candidate import", "from starter import")
+            (temp_path / "starter_runner.py").write_text(starter_script, encoding="utf-8")
 
-        try:
-            starter_run = subprocess.run(
-                [sys.executable, "starter_runner.py"],
-                cwd=temp_path,
-                capture_output=True,
-                text=True,
-                timeout=task.benchmark_timeout_s,
-                check=False,
+            try:
+                starter_run = subprocess.run(
+                    [sys.executable, "starter_runner.py"],
+                    cwd=temp_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=task.benchmark_timeout_s,
+                    check=False,
+                )
+                starter_payload = json.loads((temp_path / "benchmark.json").read_text(encoding="utf-8"))
+
+                candidate_run = subprocess.run(
+                    [sys.executable, "candidate_runner.py"],
+                    cwd=temp_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=task.benchmark_timeout_s,
+                    check=False,
+                )
+                candidate_payload = json.loads((temp_path / "benchmark.json").read_text(encoding="utf-8"))
+            except subprocess.TimeoutExpired as exc:
+                output = (exc.stdout or "") + (exc.stderr or "")
+                return 0.0, True, (output or "benchmark timed out").strip()
+            except Exception as exc:  # pragma: no cover
+                return 0.0, False, str(exc)
+
+            starter_elapsed = max(float(starter_payload["elapsed"]), 1e-9)
+            candidate_elapsed = max(float(candidate_payload["elapsed"]), 1e-9)
+            speedup = starter_elapsed / candidate_elapsed
+            runtime_score = clamp_score(min((speedup - 1.0) / 3.0, 1.0))
+            output = "\n".join(
+                part
+                for part in [
+                    starter_run.stdout.strip(),
+                    starter_run.stderr.strip(),
+                    candidate_run.stdout.strip(),
+                    candidate_run.stderr.strip(),
+                    f"starter={starter_elapsed:.6f}s candidate={candidate_elapsed:.6f}s speedup={speedup:.2f}x",
+                ]
+                if part
             )
-            starter_payload = json.loads((temp_path / "benchmark.json").read_text(encoding="utf-8"))
-
-            candidate_run = subprocess.run(
-                [sys.executable, "candidate_runner.py"],
-                cwd=temp_path,
-                capture_output=True,
-                text=True,
-                timeout=task.benchmark_timeout_s,
-                check=False,
-            )
-            candidate_payload = json.loads((temp_path / "benchmark.json").read_text(encoding="utf-8"))
-        except subprocess.TimeoutExpired as exc:
-            output = (exc.stdout or "") + (exc.stderr or "")
-            return 0.0, True, (output or "benchmark timed out").strip()
-        except Exception as exc:  # pragma: no cover
-            return 0.0, False, str(exc)
-
-        starter_elapsed = max(float(starter_payload["elapsed"]), 1e-9)
-        candidate_elapsed = max(float(candidate_payload["elapsed"]), 1e-9)
-        speedup = starter_elapsed / candidate_elapsed
-        runtime_score = clamp_score(min((speedup - 1.0) / 3.0, 1.0))
-        output = "\n".join(
-            part
-            for part in [
-                starter_run.stdout.strip(),
-                starter_run.stderr.strip(),
-                candidate_run.stdout.strip(),
-                candidate_run.stderr.strip(),
-                f"starter={starter_elapsed:.6f}s candidate={candidate_elapsed:.6f}s speedup={speedup:.2f}x",
-            ]
-            if part
-        )
-        return runtime_score, False, output
+            return runtime_score, False, output
+    except Exception as exc:  # pragma: no cover
+        return 0.0, False, str(exc)
 
 
 def ast_quality_score(code: str, task: TaskSpec) -> float:
@@ -153,6 +156,7 @@ def grade_optimization_task(candidate_code: str, task: TaskSpec) -> TaskGrade:
         tests_passed=execution.passed,
         tests_total=execution.total,
         quality_score=quality_score,
+        runtime_score=runtime_score,
         details={
             "tests": execution.output,
             "benchmark": benchmark_output,

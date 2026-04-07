@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Dict
 
+from compat import install_openenv_fastmcp_compat
+
+install_openenv_fastmcp_compat()
+
 from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
 

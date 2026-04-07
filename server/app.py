@@ -7,7 +7,7 @@ import os
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import RedirectResponse
 
-from openenv.core.env_server.http_server import create_app
+from compat import create_app
 
 from models import (
     HealthResponse,
@@ -20,9 +20,12 @@ from models import (
 from server.env import PythonCodeReviewEnvironment
 
 
-MAX_CONCURRENT_ENVS = int(os.getenv("MAX_CONCURRENT_ENVS", "16"))
+try:
+    MAX_CONCURRENT_ENVS = max(int(os.getenv("MAX_CONCURRENT_ENVS", "16")), 1)
+except Exception:
+    MAX_CONCURRENT_ENVS = 16
 
-python_env = PythonCodeReviewEnvironment()
+python_env = PythonCodeReviewEnvironment(verbose=False)
 app = create_app(
     PythonCodeReviewEnvironment,
     PythonCodeReviewAction,
@@ -80,6 +83,23 @@ def get_state_post() -> RedirectResponse:
 
 
 app.include_router(router)
+
+
+def _prioritize_route(path: str, methods: set[str]) -> None:
+    """Move a matching custom route ahead of default OpenEnv routes."""
+    try:
+        for index in range(len(app.router.routes) - 1, -1, -1):
+            route = app.router.routes[index]
+            route_path = getattr(route, "path", None)
+            route_methods = set(getattr(route, "methods", set()) or set())
+            if route_path == path and methods.issubset(route_methods):
+                app.router.routes.insert(0, app.router.routes.pop(index))
+                break
+    except Exception:
+        pass
+
+
+_prioritize_route("/health", {"GET"})
 
 
 def main(host: str = "0.0.0.0", port: int = 8000) -> None:

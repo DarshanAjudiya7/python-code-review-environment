@@ -161,82 +161,66 @@ def calculate_invoice_total(line_items: Iterable[int], discount_percent: int) ->
 
 TASK_OPTIMIZATION = TaskSpec(
     task_id="optimization-hard",
-    title="Optimize inefficient list duplicate removal",
+    title="Optimize inefficient user activity summarization",
     difficulty="hard",
     task_kind="optimization",
     task_description=(
-        "Code review found that `remove_duplicates` is inefficient for large lists. "
-        "The current implementation uses nested loops (O(n²) time). "
-        "Optimize it to O(n) using a set-based approach while maintaining order. "
+        "Code review found that `summarize_user_activity` is inefficient for large event streams. "
+        "The current implementation repeatedly scans the full event list for every user, making it O(n**2). "
+        "Refactor it to aggregate counts in one pass while preserving the sorted output contract. "
         "Style and code quality also matter: use idiomatic Python, proper types, and clear logic. "
         "All tests must pass, and the optimized version should be measurably faster."
     ),
-    starter_code='''from typing import List, TypeVar
+    starter_code='''from typing import Iterable
 
 
-T = TypeVar('T')
+def summarize_user_activity(events: Iterable[dict]) -> list[tuple[str, int]]:
+    """Aggregate user activity counts."""
 
+    ordered_users = []
+    for event in events:
+        user_id = event["user_id"]
+        if user_id not in ordered_users:
+            ordered_users.append(user_id)
 
-def remove_duplicates(items: List[T]) -> List[T]:
-    """Remove duplicates from list while preserving order.
-    
-    This implementation is inefficient for large lists.
-    
-    Args:
-        items: List that may contain duplicate elements.
-        
-    Returns:
-        List with duplicates removed, order preserved.
-    """
-    result = []
-    for item in items:
-        if item not in result:  # O(n) lookup in list per iteration
-            result.append(item)
-    return result
+    summary = []
+    for user_id in ordered_users:
+        count = 0
+        for event in events:
+            if event["user_id"] == user_id:
+                count += 1
+        summary.append((user_id, count))
+    return sorted(summary, key=lambda item: (-item[1], item[0]))
 ''',
-    reference_code='''from typing import List, TypeVar
+    reference_code='''from collections import Counter
+from typing import Iterable
 
 
-T = TypeVar('T')
+def summarize_user_activity(events: Iterable[dict]) -> list[tuple[str, int]]:
+    """Aggregate user activity counts in one pass."""
 
-
-def remove_duplicates(items: List[T]) -> List[T]:
-    """Remove duplicates from list while preserving order.
-    
-    Efficient set-based implementation with O(n) time complexity.
-    
-    Args:
-        items: List that may contain duplicate elements.
-        
-    Returns:
-        List with duplicates removed, order preserved.
-    """
-    seen: set = set()
-    result = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            result.append(item)
-    return result
+    counts = Counter(event["user_id"] for event in events)
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
 ''',
     visible_tests=[
-        "remove_duplicates([1, 2, 2, 3, 1]) == [1, 2, 3]",
-        "remove_duplicates(['a', 'b', 'a']) == ['a', 'b']",
-        "remove_duplicates([]) == []",
-        "remove_duplicates([1]) == [1]",
+        "summarize_user_activity([{'user_id': 'alice'}, {'user_id': 'bob'}, {'user_id': 'alice'}]) == [('alice', 2), ('bob', 1)]",
+        "summarize_user_activity([{'user_id': 'z'}, {'user_id': 'a'}]) == [('a', 1), ('z', 1)]",
+        "summarize_user_activity([]) == []",
+        "summarize_user_activity([{'user_id': 'solo'}]) == [('solo', 1)]",
     ],
     hidden_tests=[
-        "remove_duplicates([5, 4, 3, 2, 1, 5, 4]) == [5, 4, 3, 2, 1]",
+        "summarize_user_activity([{'user_id': 'u2'}, {'user_id': 'u1'}, {'user_id': 'u2'}, {'user_id': 'u2'}, {'user_id': 'u1'}]) == [('u2', 3), ('u1', 2)]",
     ],
     max_steps=10,
-    benchmark_entrypoint="remove_duplicates",
-    benchmark_builder="lambda: list(range(5000)) + list(range(5000))",
+    benchmark_entrypoint="summarize_user_activity",
+    benchmark_builder='''def build_benchmark_events():
+    return [{"user_id": f"user_{index % 400}"} for index in range(6000)]''',
     benchmark_repeats=3,
     benchmark_timeout_s=1.0,
     style_max_line_length=88,
     expected_quality_markers=[
-        "set",
-        "O(n)",
+        "Counter",
+        "sorted",
     ],
 )
 

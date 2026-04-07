@@ -9,85 +9,16 @@ import os
 import subprocess
 import sys
 import time
-import types
 from collections.abc import Iterable
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Any, Dict, Optional
+
+from compat import install_openenv_fastmcp_compat
 
 try:
     from openai import OpenAI
 except Exception:
     OpenAI = None  # type: ignore[assignment]
-
-
-def install_openenv_fastmcp_compat() -> None:
-    """Patch FastMCP API differences so OpenEnv imports remain usable."""
-    try:
-        import fastmcp  # type: ignore
-    except Exception:
-        return
-
-    try:
-        if not hasattr(fastmcp, "Client"):
-            class CompatClient:
-                """Minimal async-compatible MCP client used only for import compatibility."""
-
-                def __init__(self, *args: Any, **kwargs: Any) -> None:
-                    self.args = args
-                    self.kwargs = kwargs
-
-                async def __aenter__(self) -> "CompatClient":
-                    return self
-
-                async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-                    return False
-
-                async def list_tools(self) -> list[Any]:
-                    return []
-
-                async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
-                    raise RuntimeError(
-                        f"MCP client compatibility mode cannot call tool: {tool_name}"
-                    )
-
-            fastmcp.Client = CompatClient  # type: ignore[attr-defined]
-    except Exception:
-        pass
-
-    try:
-        client_pkg = sys.modules.get("fastmcp.client")
-        if client_pkg is None:
-            client_pkg = types.ModuleType("fastmcp.client")
-            sys.modules["fastmcp.client"] = client_pkg
-
-        client_mod = sys.modules.get("fastmcp.client.client")
-        if client_mod is None:
-            client_mod = types.ModuleType("fastmcp.client.client")
-            sys.modules["fastmcp.client.client"] = client_mod
-
-        if not hasattr(client_mod, "CallToolResult"):
-            class CallToolResult:
-                """Compatibility result container for legacy OpenEnv imports."""
-
-                def __init__(
-                    self,
-                    content: Any = None,
-                    structured_content: Any = None,
-                    meta: Any = None,
-                    data: Any = None,
-                    is_error: bool = False,
-                ) -> None:
-                    self.content = content
-                    self.structured_content = structured_content
-                    self.meta = meta
-                    self.data = data
-                    self.is_error = is_error
-
-            client_mod.CallToolResult = CallToolResult
-
-        client_pkg.client = client_mod  # type: ignore[attr-defined]
-    except Exception:
-        pass
 
 
 install_openenv_fastmcp_compat()
@@ -116,9 +47,9 @@ ALLOWED_ACTIONS = {
 }
 DEFAULT_MODEL_NAME = "mock-model"
 DEFAULT_ACTION = {"action_type": "analyze_code", "code": None, "fallback_reason": "mock_response"}
-API_TIMEOUT_SECONDS = 6.0
-API_RETRIES = 2
-API_RETRY_DELAY_SECONDS = 0.35
+API_TIMEOUT_SECONDS = 3.0
+API_RETRIES = 1
+API_RETRY_DELAY_SECONDS = 0.2
 MAX_STEPS = 2
 
 
@@ -227,6 +158,9 @@ def build_prompt(observation: Any) -> str:
 def create_client() -> Optional[Any]:
     """Create an OpenAI-compatible client using only the allowed environment variables."""
     if OpenAI is None:
+        return None
+    base_url = safe_env("API_BASE_URL", "")
+    if not base_url:
         return None
     try:
         if safe_env("HF_TOKEN", ""):
