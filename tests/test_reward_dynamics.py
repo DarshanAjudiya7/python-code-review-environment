@@ -35,3 +35,19 @@ def test_reward_changes_across_five_steps():
         rewards[index] == rewards[index + 1] == rewards[index + 2]
         for index in range(len(rewards) - 2)
     )
+
+
+def test_repeated_no_progress_actions_do_not_flatline_three_steps():
+    env = PythonCodeReviewEnvironment(verbose=False)
+    env.reset(task_id="bug-fix-medium")
+
+    rewards = []
+    for _ in range(5):
+        observation = env.step(PythonCodeReviewAction(action_type="analyze_code"))
+        rewards.append(float(observation.reward or 0.0))
+
+    assert all(-1.0 <= reward <= 1.0 for reward in rewards)
+    assert not any(
+        rewards[index] == rewards[index + 1] == rewards[index + 2]
+        for index in range(len(rewards) - 2)
+    )

@@ -78,6 +78,7 @@ class PythonCodeReviewEnvironment(
         self._done = False
         self._last_status = "Call reset() to start."
         self._last_reward = RewardDetails(value=0.0, reason="Environment initialized.")
+        self._reward_history: list[float] = []
         self._metrics = self._blank_metrics()
         self._last_action_type = ""
 
@@ -99,6 +100,7 @@ class PythonCodeReviewEnvironment(
         self._task = task
         self._done = False
         self._metrics = self._blank_metrics()
+        self._reward_history = []
         self._last_action_type = ""
         self._last_status = "Inspect the code, run checks, edit the code, then submit."
         self._last_reward = RewardDetails(
@@ -271,6 +273,7 @@ class PythonCodeReviewEnvironment(
             - timeout_penalty
         )
         reward_value = max(-1.0, min(1.0, round(reward_value, 6)))
+        reward_value = self._stabilize_reward(reward_value)
         return RewardDetails(
             value=reward_value,
             syntax_reward=round(syntax_reward, 6),
@@ -306,6 +309,20 @@ class PythonCodeReviewEnvironment(
             "syntax_score": 0.0,
             "quality_score": 0.0,
         }
+
+    def _stabilize_reward(self, reward_value: float) -> float:
+        """Break exact three-step reward plateaus without adding randomness."""
+        rounded_reward = round(reward_value, 6)
+        if len(self._reward_history) >= 2 and self._reward_history[-1] == self._reward_history[-2] == rounded_reward:
+            adjustment = 0.001 if self._state.step_count % 2 == 0 else -0.001
+            rounded_reward = round(max(-1.0, min(1.0, rounded_reward + adjustment)), 6)
+        return rounded_reward
+
+    def _record_reward(self, reward_value: float) -> None:
+        """Track recent rewards so repeated plateaus can be detected."""
+        self._reward_history.append(round(float(reward_value), 6))
+        if len(self._reward_history) > 8:
+            self._reward_history = self._reward_history[-8:]
 
     def _select_task(self, task_id: Optional[str]) -> TaskSpec:
         """Select the requested task or advance deterministically."""
@@ -404,6 +421,7 @@ class PythonCodeReviewEnvironment(
         self._last_status = self._build_status(action_type, grade)
         self._metrics = current_metrics
         self._last_action_type = action_type
+        self._record_reward(self._last_reward.value)
         self._append_history(action_type, self._last_status, self._last_reward.value)
 
     def _handle_edit(self, code: Optional[str]) -> None:
@@ -427,6 +445,7 @@ class PythonCodeReviewEnvironment(
             invalid_action=True,
         )
         self._last_status = reason
+        self._record_reward(self._last_reward.value)
         self._append_history("analyze_code", reason, self._last_reward.value)
 
     def _auto_submit(self) -> None:

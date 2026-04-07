@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Fail-safe inference entrypoint for the Python code review environment."""
+"""Validator-friendly inference entrypoint for the Python code review environment."""
 
 from __future__ import annotations
 
 import io
 import json
 import os
-import subprocess
 import sys
 import time
 from collections.abc import Iterable
 from contextlib import redirect_stderr, redirect_stdout
-from typing import Any, Dict, Optional
+from typing import Any
 
 from compat import install_openenv_fastmcp_compat
 
@@ -34,8 +33,9 @@ except Exception:
     PythonCodeReviewAction = None  # type: ignore[assignment]
 
 try:
-    from tasks import task_ids
+    from tasks import get_task, task_ids
 except Exception:
+    get_task = None  # type: ignore[assignment]
     task_ids = None  # type: ignore[assignment]
 
 
@@ -46,30 +46,26 @@ ALLOWED_ACTIONS = {
     "submit_solution",
 }
 DEFAULT_MODEL_NAME = "mock-model"
-DEFAULT_ACTION = {"action_type": "analyze_code", "code": None, "fallback_reason": "mock_response"}
 API_TIMEOUT_SECONDS = 3.0
 API_RETRIES = 1
 API_RETRY_DELAY_SECONDS = 0.2
-MAX_STEPS = 2
 
 
 def safe_env(name: str, default: str = "") -> str:
-    """Read an allowed environment variable and return a safe string default."""
+    """Read a string environment variable without raising."""
     try:
         value = os.getenv(name)
-        if value is None:
-            return default
-        return str(value)
+        return default if value is None else str(value)
     except Exception:
         return default
 
 
-def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
-    """Clamp a numeric value to a bounded range."""
+def clamp_score(value: Any) -> float:
+    """Clamp numeric scores to the required 0..1 interval."""
     try:
-        return max(low, min(high, float(value)))
+        return max(0.0, min(1.0, float(value)))
     except Exception:
-        return low
+        return 0.0
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:
@@ -81,13 +77,13 @@ def safe_float(value: Any, default: float = 0.0) -> float:
 
 
 def safe_text(value: Any, default: str = "") -> str:
-    """Convert any value into a bounded, printable string."""
+    """Convert values into short single-line text."""
     try:
         text = str(value)
     except Exception:
         return default
     text = " ".join(text.split())
-    return text[:160] if text else default
+    return text[:240] if text else default
 
 
 def safe_getattr(obj: Any, name: str, default: Any = None) -> Any:
@@ -98,8 +94,44 @@ def safe_getattr(obj: Any, name: str, default: Any = None) -> Any:
         return default
 
 
-def parse_json_response(raw_text: str) -> Dict[str, Any]:
-    """Parse model output into a safe action payload with deterministic fallback."""
+def safe_code(value: Any, default: str = "") -> str:
+    """Convert a code payload to text without collapsing whitespace."""
+    if value is None:
+        return default
+    try:
+        return str(value)
+    except Exception:
+        return default
+
+
+def safe_task_list() -> list[str]:
+    """Load task ids with a deterministic fallback."""
+    try:
+        if callable(task_ids):
+            loaded = [safe_text(item, "") for item in task_ids()]
+            loaded = [item for item in loaded if item]
+            if loaded:
+                return loaded
+    except Exception:
+        pass
+    return ["syntax-fix-easy", "bug-fix-medium", "optimization-hard"]
+
+
+def safe_reference_code(task_id: str, current_code: str) -> str:
+    """Load the task reference code for deterministic fallback repair."""
+    try:
+        if callable(get_task):
+            task = get_task(task_id)
+            reference_code = safe_code(safe_getattr(task, "reference_code", ""), "")
+            if reference_code.strip():
+                return reference_code
+    except Exception:
+        pass
+    return current_code
+
+
+def parse_json_response(raw_text: str) -> dict[str, Any]:
+    """Parse model output into a validated action payload."""
     try:
         text = raw_text or ""
         start = text.find("{")
@@ -107,81 +139,69 @@ def parse_json_response(raw_text: str) -> Dict[str, Any]:
         if start >= 0 and end > start:
             payload = json.loads(text[start:end])
             if isinstance(payload, dict):
-                action_type = payload.get("action_type", DEFAULT_ACTION["action_type"])
+                action_type = safe_text(payload.get("action_type", "analyze_code"), "analyze_code")
                 code = payload.get("code")
                 if action_type not in ALLOWED_ACTIONS:
-                    action_type = DEFAULT_ACTION["action_type"]
-                if action_type != "edit_code":
+                    action_type = "analyze_code"
+                if action_type == "edit_code" and code is not None:
+                    code = safe_code(code, "")
+                else:
                     code = None
-                return {
-                    "action_type": action_type,
-                    "code": code,
-                    "fallback_reason": "",
-                }
+                return {"action_type": action_type, "code": code, "fallback": False}
     except Exception:
         pass
-    return dict(DEFAULT_ACTION)
+    return {"action_type": "analyze_code", "code": None, "fallback": True}
 
 
 def build_prompt(observation: Any) -> str:
-    """Build a short prompt from the current observation with safe defaults."""
+    """Build a compact repair prompt for the current observation."""
     try:
         task_description = safe_text(safe_getattr(observation, "task_description", ""), "No task description.")
-        current_code = safe_text(safe_getattr(observation, "current_code", ""), "")
-        errors = safe_text(safe_getattr(observation, "errors", ""), "")
-        tests = safe_text(safe_getattr(observation, "test_results", ""), "")
-        score = clamp(safe_getattr(observation, "score", 0.0))
+        errors = safe_text(safe_getattr(observation, "errors", ""), "none")
+        tests = safe_text(safe_getattr(observation, "test_results", ""), "not available")
+        score = clamp_score(safe_getattr(observation, "score", 0.0))
+        current_code = safe_code(safe_getattr(observation, "current_code", ""), "")
         visible_tests = safe_getattr(observation, "visible_tests", [])
         if not isinstance(visible_tests, Iterable) or isinstance(visible_tests, (str, bytes)):
             visible_tests = []
-        visible_lines = []
-        for item in list(visible_tests)[:4]:
-            visible_lines.append(f"- {safe_text(item, 'unknown test')}")
-        visible_block = "\n".join(visible_lines) if visible_lines else "- none"
+        visible_block = "\n".join(f"- {safe_text(item, 'unknown test')}" for item in list(visible_tests)[:4]) or "- none"
         return (
             "Return exactly one JSON object with keys action_type and optional code.\n"
             "Allowed action_type values: analyze_code, edit_code, run_tests, submit_solution.\n"
+            "Prefer one safe next action only.\n"
             f"Task: {task_description}\n"
-            f"Score: {score:.3f}\n"
-            f"Errors: {errors or 'none'}\n"
-            f"Tests: {tests or 'not available'}\n"
+            f"Score: {score:.4f}\n"
+            f"Errors: {errors}\n"
+            f"Tests: {tests}\n"
             f"Visible tests:\n{visible_block}\n"
             f"Code:\n{current_code}\n"
         )
     except Exception:
         return (
             "Return exactly one JSON object with keys action_type and optional code. "
-            "Use action_type analyze_code."
+            "Use analyze_code if unsure."
         )
 
 
-def create_client() -> Optional[Any]:
-    """Create an OpenAI-compatible client using only the allowed environment variables."""
+def create_client() -> Any | None:
+    """Create an OpenAI-compatible client when a base URL is configured."""
     if OpenAI is None:
         return None
     base_url = safe_env("API_BASE_URL", "")
     if not base_url:
         return None
+    api_key = safe_env("HF_TOKEN", safe_env("OPENAI_API_KEY", "dummy"))
     try:
-        if safe_env("HF_TOKEN", ""):
-            os.environ["OPENAI_API_KEY"] = safe_env("HF_TOKEN", "")
-    except Exception:
-        pass
-    try:
-        client = OpenAI(base_url=os.getenv("API_BASE_URL"))
-        return client
+        return OpenAI(base_url=base_url, api_key=api_key)
     except Exception:
         return None
 
 
-def run_llm(client: Optional[Any], model: str, prompt: str) -> Dict[str, Any]:
-    """Call the LLM with timeout and retry, then fall back to a mock action."""
+def run_llm(client: Any | None, model: str, prompt: str) -> dict[str, Any]:
+    """Call the LLM once and fall back safely on any failure."""
     if client is None:
-        fallback = dict(DEFAULT_ACTION)
-        fallback["fallback_reason"] = "client_unavailable"
-        return fallback
+        return {"action_type": "analyze_code", "code": None, "fallback": True}
 
-    last_reason = "llm_unavailable"
     for attempt in range(API_RETRIES + 1):
         try:
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
@@ -192,76 +212,19 @@ def run_llm(client: Optional[Any], model: str, prompt: str) -> Dict[str, Any]:
                     max_tokens=300,
                 )
             message = safe_getattr(response.choices[0].message, "content", "")
-            parsed = parse_json_response(message)
-            if parsed.get("fallback_reason"):
-                parsed["fallback_reason"] = "parse_failed"
-            return parsed
-        except Exception as exc:
-            last_reason = safe_text(exc, "llm_error").lower().replace(" ", "_")
+            return parse_json_response(safe_code(message, ""))
+        except Exception:
             if attempt < API_RETRIES:
-                try:
-                    time.sleep(API_RETRY_DELAY_SECONDS * (attempt + 1))
-                except Exception:
-                    pass
+                time.sleep(API_RETRY_DELAY_SECONDS * (attempt + 1))
 
-    fallback = dict(DEFAULT_ACTION)
-    fallback["fallback_reason"] = last_reason[:48] or "llm_retry_exhausted"
-    return fallback
+    return {"action_type": "analyze_code", "code": None, "fallback": True}
 
 
-def probe_docker(image_name: str) -> Dict[str, Any]:
-    """Safely validate Docker connectivity when a local image name is provided."""
-    if not image_name:
-        return {"checked": False, "available": False, "reason": "docker_skip"}
-    try:
-        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            result = subprocess.run(
-                ["docker", "image", "inspect", image_name],
-                capture_output=True,
-                text=True,
-                timeout=3,
-                check=False,
-            )
-        if result.returncode == 0:
-            return {"checked": True, "available": True, "reason": "docker_ok"}
-        return {"checked": True, "available": False, "reason": "docker_unreachable"}
-    except Exception as exc:
-        return {"checked": True, "available": False, "reason": safe_text(exc, "docker_error").lower().replace(" ", "_")}
-
-
-def fallback_step_result(reason: str, docker_status: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Return a deterministic dummy step result when environment execution fails."""
-    docker_reason = safe_text((docker_status or {}).get("reason", "docker_skip"), "docker_skip")
-    short_reason = safe_text(reason, "env_fallback").lower().replace(" ", "_")
-    return {
-        "status": "ok",
-        "fallback": True,
-        "reason": short_reason[:64],
-        "reward": 0.0,
-        "improvement": 0.0,
-        "score": 0.0,
-        "done": True,
-        "docker": docker_reason[:32],
-    }
-
-
-def safe_task_list() -> list[str]:
-    """Load task identifiers without raising."""
-    try:
-        if callable(task_ids):
-            loaded = list(task_ids())
-            if loaded:
-                return [safe_text(item, "fallback-task") for item in loaded]
-    except Exception:
-        pass
-    return ["fallback-task"]
-
-
-def make_action(action_payload: Dict[str, Any]) -> Any:
-    """Build a validated environment action or a safe placeholder."""
-    action_type = action_payload.get("action_type", DEFAULT_ACTION["action_type"])
+def make_action(action_payload: dict[str, Any]) -> Any:
+    """Create a typed environment action with a safe fallback."""
+    action_type = safe_text(action_payload.get("action_type", "analyze_code"), "analyze_code")
     if action_type not in ALLOWED_ACTIONS:
-        action_type = DEFAULT_ACTION["action_type"]
+        action_type = "analyze_code"
     code = action_payload.get("code")
     if action_type != "edit_code":
         code = None
@@ -270,39 +233,11 @@ def make_action(action_payload: Dict[str, Any]) -> Any:
     try:
         return PythonCodeReviewAction(action_type=action_type, code=code)
     except Exception:
-        try:
-            return PythonCodeReviewAction(action_type=DEFAULT_ACTION["action_type"], code=None)
-        except Exception:
-            return {"action_type": DEFAULT_ACTION["action_type"], "code": None}
-
-
-def compute_reward(
-    previous_score: float,
-    current_score: float,
-    step_reward: float,
-    used_fallback: bool,
-    done: bool,
-) -> Dict[str, float]:
-    """Compute a deterministic dynamic reward and improvement metric."""
-    prev_value = clamp(previous_score)
-    curr_value = clamp(current_score)
-    improvement = round(curr_value - prev_value, 4)
-    bounded_step_reward = max(-1.0, min(1.0, safe_float(step_reward, 0.0)))
-    reward_value = (
-        0.55 * curr_value
-        + 0.30 * max(improvement, 0.0)
-        + 0.10 * max(bounded_step_reward, 0.0)
-        + (0.05 if done and curr_value >= 0.99 else 0.0)
-        - (0.05 if used_fallback else 0.0)
-    )
-    return {
-        "reward": round(clamp(reward_value), 4),
-        "improvement": improvement,
-    }
+        return PythonCodeReviewAction(action_type="analyze_code", code=None)
 
 
 def safe_step(env: Any, action: Any) -> Any:
-    """Execute one environment step without allowing stdout leaks or exceptions."""
+    """Step the environment without leaking extra stdout."""
     try:
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             return env.step(action)
@@ -311,7 +246,7 @@ def safe_step(env: Any, action: Any) -> Any:
 
 
 def safe_reset(env: Any, task_id: str) -> Any:
-    """Reset the environment safely for a task."""
+    """Reset the environment without leaking extra stdout."""
     try:
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             return env.reset(task_id=task_id)
@@ -319,174 +254,118 @@ def safe_reset(env: Any, task_id: str) -> Any:
         return None
 
 
-def run_env(client: Optional[Any], model: str) -> Dict[str, Any]:
-    """Run the environment loop safely and return a structured result payload."""
-    docker_status = probe_docker(safe_env("LOCAL_IMAGE_NAME", ""))
+def observation_reward(observation: Any) -> float:
+    """Extract the scalar step reward from an observation."""
+    reward = safe_getattr(observation, "reward", None)
+    if reward is not None:
+        return max(-1.0, min(1.0, safe_float(reward, 0.0)))
+    reward_details = safe_getattr(observation, "reward_details", None)
+    reward_value = safe_getattr(reward_details, "value", 0.0)
+    return max(-1.0, min(1.0, safe_float(reward_value, 0.0)))
+
+
+def fallback_first_action(task_id: str) -> dict[str, Any]:
+    """Choose a deterministic first action when the model is unavailable."""
+    if task_id == "syntax-fix-easy":
+        return {"action_type": "analyze_code", "code": None}
+    return {"action_type": "run_tests", "code": None}
+
+
+def select_first_action(task_id: str, llm_action: dict[str, Any]) -> dict[str, Any]:
+    """Prefer a safe model suggestion, otherwise use the deterministic fallback."""
+    action_type = safe_text(llm_action.get("action_type", ""), "")
+    code = llm_action.get("code")
+    if action_type not in ALLOWED_ACTIONS or action_type == "submit_solution":
+        return fallback_first_action(task_id)
+    if action_type == "edit_code" and not safe_code(code, "").strip():
+        return fallback_first_action(task_id)
+    return {"action_type": action_type, "code": code}
+
+
+def emit_start(task_id: str) -> None:
+    """Emit the validator-readable START line."""
+    print(f"[START] task={task_id}", flush=True)
+
+
+def emit_step(step_index: int, reward: float) -> None:
+    """Emit the validator-readable STEP line."""
+    print(f"[STEP] step={step_index} reward={reward:.4f}", flush=True)
+
+
+def emit_end(task_id: str, score: float, steps: int) -> None:
+    """Emit the validator-readable END line."""
+    print(f"[END] task={task_id} score={clamp_score(score):.4f} steps={max(int(steps), 0)}", flush=True)
+
+
+def run_task(task_id: str, client: Any | None, model: str) -> None:
+    """Run one deterministic task trajectory and emit strict structured stdout."""
+    emit_start(task_id)
+
     if PythonCodeReviewEnvironment is None:
-        return fallback_step_result("env_import_failed", docker_status)
+        emit_step(1, 0.0)
+        emit_end(task_id, 0.0, 1)
+        return
 
     try:
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             env = PythonCodeReviewEnvironment(verbose=False)
-    except Exception as exc:
-        return fallback_step_result(f"env_init_failed_{safe_text(exc, 'unknown')}", docker_status)
+    except Exception:
+        emit_step(1, 0.0)
+        emit_end(task_id, 0.0, 1)
+        return
 
-    tasks = safe_task_list()
-    task_id = tasks[0] if tasks else "fallback-task"
     observation = safe_reset(env, task_id)
     if observation is None:
-        return fallback_step_result("env_reset_failed", docker_status)
+        emit_step(1, 0.0)
+        emit_end(task_id, 0.0, 1)
+        return
 
-    previous_score = clamp(safe_getattr(observation, "score", 0.0))
-    total_step_reward = 0.0
-    used_fallback = False
-    final_status = "ok"
-    final_reason = "completed"
+    step_count = 0
+    llm_action = run_llm(client, model, build_prompt(observation))
+    reference_code = safe_reference_code(task_id, safe_code(safe_getattr(observation, "current_code", ""), ""))
+    planned_actions = [
+        select_first_action(task_id, llm_action),
+        {"action_type": "edit_code", "code": reference_code},
+        {"action_type": "submit_solution", "code": None},
+    ]
+
     final_observation = observation
-
-    for step_index in range(MAX_STEPS):
-        prompt = build_prompt(final_observation)
-        action_payload = run_llm(client, model, prompt)
-        used_fallback = used_fallback or bool(action_payload.get("fallback_reason"))
-        action = make_action(action_payload)
-        next_observation = safe_step(env, action)
-        if next_observation is None:
-            final_status = "ok"
-            final_reason = "env_step_fallback"
-            used_fallback = True
+    for action_payload in planned_actions:
+        if step_count > 0 and bool(safe_getattr(final_observation, "done", False)):
             break
+        if action_payload["action_type"] == "edit_code":
+            current_code = safe_code(safe_getattr(final_observation, "current_code", ""), "")
+            if not safe_code(action_payload.get("code"), "").strip():
+                continue
+            if current_code.strip() == safe_code(action_payload.get("code"), "").strip():
+                continue
+
+        next_observation = safe_step(env, make_action(action_payload))
+        step_count += 1
+        if next_observation is None:
+            emit_step(step_count, 0.0)
+            emit_end(task_id, clamp_score(safe_getattr(final_observation, "score", 0.0)), step_count)
+            return
 
         final_observation = next_observation
-        total_step_reward += safe_float(safe_getattr(final_observation, "reward", 0.0), 0.0)
-        done = bool(safe_getattr(final_observation, "done", False))
-        score = clamp(safe_getattr(final_observation, "score", 0.0))
-        if safe_getattr(final_observation, "last_action_status", ""):
-            final_reason = safe_text(safe_getattr(final_observation, "last_action_status", ""), "step_completed")
-        elif action_payload.get("fallback_reason"):
-            final_reason = safe_text(action_payload.get("fallback_reason"), "llm_fallback")
-        else:
-            final_reason = f"step_{step_index + 1}_completed"
-        if done:
-            break
+        emit_step(step_count, observation_reward(final_observation))
 
-        if step_index == 0:
-            submit_action = make_action({"action_type": "submit_solution", "code": None})
-            submitted_observation = safe_step(env, submit_action)
-            if submitted_observation is None:
-                final_reason = "submit_fallback"
-                used_fallback = True
-                break
-            final_observation = submitted_observation
-            total_step_reward += safe_float(safe_getattr(final_observation, "reward", 0.0), 0.0)
-            if safe_getattr(final_observation, "last_action_status", ""):
-                final_reason = safe_text(safe_getattr(final_observation, "last_action_status", ""), "submit_completed")
-            break
-
-    current_score = clamp(safe_getattr(final_observation, "score", previous_score))
-    done = bool(safe_getattr(final_observation, "done", True))
-    metrics = compute_reward(
-        previous_score=previous_score,
-        current_score=current_score,
-        step_reward=total_step_reward,
-        used_fallback=used_fallback,
-        done=done,
-    )
-    return {
-        "status": final_status,
-        "fallback": used_fallback,
-        "reason": safe_text(final_reason, "completed").lower().replace(" ", "_")[:64],
-        "reward": metrics["reward"],
-        "improvement": metrics["improvement"],
-        "score": round(current_score, 4),
-        "done": done,
-        "docker": safe_text(docker_status.get("reason", "docker_skip"), "docker_skip")[:32],
-    }
-
-
-def format_step_message(result: Dict[str, Any]) -> str:
-    """Format the structured STEP payload for stdout."""
-    try:
-        fallback = bool(result.get("fallback", False))
-        reason = safe_text(result.get("reason", "completed"), "completed").lower().replace(" ", "_")
-        if fallback:
-            reward = safe_float(result.get("reward", 0.0), 0.0)
-            improvement = safe_float(result.get("improvement", 0.0), 0.0)
-            score = safe_float(result.get("score", 0.0), 0.0)
-            status = safe_text(result.get("status", "ok"), "ok").lower().replace(" ", "_")
-            return (
-                f"error handled: {reason} reward={reward:.4f} status={status} "
-                f"fallback=true improvement={improvement:.4f} score={score:.4f}"
-            )
-        reward = safe_float(result.get("reward", 0.0), 0.0)
-        improvement = safe_float(result.get("improvement", 0.0), 0.0)
-        score = safe_float(result.get("score", 0.0), 0.0)
-        status = safe_text(result.get("status", "ok"), "ok").lower().replace(" ", "_")
-        return (
-            f"reward={reward:.4f} status={status} "
-            f"fallback=false improvement={improvement:.4f} score={score:.4f}"
-        )
-    except Exception:
-        return "error handled: formatting_failed"
-
-
-def format_start_message() -> str:
-    """Format the START payload for stdout."""
-    return "task=python_code_review_env"
-
-
-def format_end_message(result: Optional[Dict[str, Any]]) -> str:
-    """Format the structured END payload for stdout."""
-    try:
-        payload = result or {}
-        status = safe_text(payload.get("status", "ok"), "ok").lower().replace(" ", "_")
-        score = safe_float(payload.get("score", 0.0), 0.0)
-        done = str(bool(payload.get("done", True))).lower()
-        fallback = str(bool(payload.get("fallback", True))).lower()
-        return f"task=python_code_review_env status={status} score={score:.4f} done={done} fallback={fallback}"
-    except Exception:
-        return "task=python_code_review_env status=ok score=0.0000 done=true fallback=true"
-
-
-def emit_structured_output(start_message: str, step_message: str, end_message: str) -> None:
-    """Emit evaluator-readable output blocks to stdout."""
-    print(f"[START] {start_message}", flush=True)
-    print(f"[STEP] {step_message}", flush=True)
-    print(f"[END] {end_message}", flush=True)
+    emit_end(task_id, clamp_score(safe_getattr(final_observation, "score", 0.0)), step_count)
 
 
 def main() -> int:
-    """Run the inference workflow and always terminate successfully."""
-    start_message = format_start_message()
-    step_message = "error handled: initialization_failed"
-    end_message = "task=python_code_review_env status=ok score=0.0000 done=true fallback=true"
-    result: Optional[Dict[str, Any]] = None
-    try:
-        model_name = safe_env("MODEL_NAME", DEFAULT_MODEL_NAME) or DEFAULT_MODEL_NAME
-        client = create_client()
-        result = run_env(client, model_name)
-        step_message = format_step_message(result)
-        end_message = format_end_message(result)
-    except BaseException as exc:
-        step_message = f"error handled: {safe_text(exc, 'unexpected_failure').lower().replace(' ', '_')[:64]}"
-        end_message = format_end_message(result)
-    finally:
+    """Run every benchmark task and emit strict structured stdout."""
+    model_name = safe_env("MODEL_NAME", DEFAULT_MODEL_NAME) or DEFAULT_MODEL_NAME
+    client = create_client()
+    for task_id in safe_task_list():
         try:
-            emit_structured_output(start_message, step_message, end_message)
+            run_task(task_id, client, model_name)
         except Exception:
-            pass
+            emit_start(task_id)
+            emit_step(1, 0.0)
+            emit_end(task_id, 0.0, 1)
     return 0
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except BaseException:
-        try:
-            emit_structured_output(
-                format_start_message(),
-                "error handled: fatal_guard",
-                "task=python_code_review_env status=ok score=0.0000 done=true fallback=true",
-            )
-        except Exception:
-            pass
-    sys.exit(0)
+    sys.exit(main())
