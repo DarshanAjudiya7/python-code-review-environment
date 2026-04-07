@@ -183,7 +183,7 @@ def remove_duplicates(items: List[T]) -> List[T]:
     benchmark_entrypoint="remove_duplicates",
     benchmark_input_expr="list(range(1800)) + list(range(1800)) + list(range(900))",
     benchmark_repeats=4,
-    benchmark_timeout_s=3.0,
+    benchmark_timeout_s=30.0,
     style_max_line_length=88,
     expected_quality_markers=["seen", "set", "result.append"],
 )

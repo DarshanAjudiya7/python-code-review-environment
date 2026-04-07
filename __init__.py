@@ -1,35 +1,3 @@
-"""Compatibility exports for the canonical package."""
+"""Root compatibility package marker for the repository checkout."""
 
-from client import CodeReviewEnv, MyEnv, PythonEnv
-from models import (
-    HealthResponse,
-    HistoryEntry,
-    PythonCodeReviewAction,
-    PythonCodeReviewObservation,
-    PythonCodeReviewState,
-    RewardDetails,
-    TaskDescriptor,
-    TaskGrade,
-)
-from python_code_review_env.envs.python_env_env.server.env import (
-    CodeReviewEnvironment,
-    PythonCodeReviewEnvironment,
-    PythonEnvironment,
-)
-
-__all__ = [
-    "PythonEnv",
-    "CodeReviewEnv",
-    "MyEnv",
-    "PythonCodeReviewAction",
-    "PythonCodeReviewObservation",
-    "PythonCodeReviewState",
-    "PythonCodeReviewEnvironment",
-    "PythonEnvironment",
-    "CodeReviewEnvironment",
-    "HealthResponse",
-    "HistoryEntry",
-    "RewardDetails",
-    "TaskDescriptor",
-    "TaskGrade",
-]
+__all__ = []

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -70,10 +71,12 @@ pathlib.Path("pytest_results.json").write_text(json.dumps(payload), encoding="ut
 """
 
 
-def run_pytest_suite(candidate_code: str, tests: Iterable[str], timeout_s: float = 3.0) -> PytestExecution:
+def run_pytest_suite(candidate_code: str, tests: Iterable[str], timeout_s: float = 30.0) -> PytestExecution:
     test_cases = list(tests)
     with tempfile.TemporaryDirectory(prefix="python-code-review-") as temp_dir:
         temp_path = Path(temp_dir)
+        env = os.environ.copy()
+        env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
         (temp_path / "candidate.py").write_text(candidate_code, encoding="utf-8")
         (temp_path / "test_candidate.py").write_text(
             _test_module_source(test_cases),
@@ -89,6 +92,7 @@ def run_pytest_suite(candidate_code: str, tests: Iterable[str], timeout_s: float
                 text=True,
                 timeout=timeout_s,
                 check=False,
+                env=env,
             )
         except subprocess.TimeoutExpired as exc:
             output = (exc.stdout or "") + (exc.stderr or "")

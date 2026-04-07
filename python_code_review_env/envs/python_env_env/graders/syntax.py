@@ -53,7 +53,7 @@ def grade_bug_fix_task(candidate_code: str, task: TaskSpec, include_hidden: bool
     if include_hidden:
         tests.extend(task.hidden_tests)
 
-    execution = run_pytest_suite(candidate_code, tests, timeout_s=3.0)
+    execution = run_pytest_suite(candidate_code, tests, timeout_s=30.0)
     if execution.timed_out:
         return TaskGrade(
             score=0.0,

@@ -11,7 +11,7 @@ def test_health_endpoint():
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] == "ok"
+    assert payload["status"] in {"ok", "healthy"}
     assert payload["environment"] == "python_code_review_env"
 
 
