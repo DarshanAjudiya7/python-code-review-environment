@@ -1,9 +1,5 @@
-"""Compatibility shim for older imports."""
+"""Compatibility wrapper for older environment imports."""
 
-try:
-    from server.code_review_environment import PythonEnvironment
-except ModuleNotFoundError:  # pragma: no cover
-    from .code_review_environment import PythonEnvironment
-
+from python_code_review_env.envs.python_env_env.server.env import PythonEnvironment
 
 __all__ = ["PythonEnvironment"]

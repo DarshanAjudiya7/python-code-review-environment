@@ -1,11 +1,3 @@
-"""Task definitions for the Python code review environment."""
+"""Compatibility wrapper for canonical tasks."""
 
-from .task_bank import TaskSpec, get_task, list_task_descriptors, list_task_summaries, task_ids
-
-__all__ = [
-    "TaskSpec",
-    "get_task",
-    "list_task_descriptors",
-    "list_task_summaries",
-    "task_ids",
-]
+from python_code_review_env.envs.python_env_env.tasks import *  # noqa: F401,F403

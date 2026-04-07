@@ -1,9 +1,5 @@
-"""Compatibility shim for older imports."""
+"""Compatibility wrapper for older environment imports."""
 
-try:
-    from server.code_review_environment import CodeReviewEnvironment
-except ModuleNotFoundError:  # pragma: no cover
-    from .code_review_environment import CodeReviewEnvironment
-
+from python_code_review_env.envs.python_env_env.server.env import CodeReviewEnvironment
 
 __all__ = ["CodeReviewEnvironment"]

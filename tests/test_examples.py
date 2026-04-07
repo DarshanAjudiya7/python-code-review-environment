@@ -1,6 +1,9 @@
-from graders.optimization import grade_optimization_task
-from graders.syntax import grade_bug_fix_task, grade_syntax_task
-from tasks.task_bank import get_task
+from python_code_review_env.envs.python_env_env.graders.optimization import grade_optimization_task
+from python_code_review_env.envs.python_env_env.graders.syntax import (
+    grade_bug_fix_task,
+    grade_syntax_task,
+)
+from python_code_review_env.envs.python_env_env.tasks.task_bank import get_task
 
 
 def test_syntax_grader_partial_score_is_bounded():

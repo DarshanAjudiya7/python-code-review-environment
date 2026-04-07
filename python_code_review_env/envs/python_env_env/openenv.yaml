@@ -13,7 +13,3 @@ metadata:
     - syntax-fix-easy
     - bug-fix-medium
     - optimization-hard
-  difficulty_levels:
-    - easy
-    - medium
-    - hard

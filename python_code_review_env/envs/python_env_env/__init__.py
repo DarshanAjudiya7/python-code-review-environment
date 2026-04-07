@@ -1,7 +1,10 @@
-"""Compatibility exports for the canonical package."""
+"""Canonical implementation of the python_code_review_env environment."""
 
-from client import CodeReviewEnv, MyEnv, PythonEnv
-from models import (
+from python_code_review_env.envs.python_env_env.client import (
+    CodeReviewEnvClient,
+    PythonEnvClient,
+)
+from python_code_review_env.envs.python_env_env.models import (
     HealthResponse,
     HistoryEntry,
     PythonCodeReviewAction,
@@ -18,9 +21,8 @@ from python_code_review_env.envs.python_env_env.server.env import (
 )
 
 __all__ = [
-    "PythonEnv",
-    "CodeReviewEnv",
-    "MyEnv",
+    "PythonEnvClient",
+    "CodeReviewEnvClient",
     "PythonCodeReviewAction",
     "PythonCodeReviewObservation",
     "PythonCodeReviewState",
